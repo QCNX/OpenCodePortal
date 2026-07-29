@@ -1,0 +1,30 @@
+{
+  "name": "opencode-portal",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "packageManager": "pnpm@11.2.2",
+  "description": "OpenCode Portal — unified SSO gateway + instance selector + reverse proxy",
+  "scripts": {
+    "build": "tsc",
+    "dev:server": "tsx src/server/index.ts",
+    "dev:agent": "tsx src/agent/index.ts",
+    "start:server": "node dist/server/index.js",
+    "start:agent": "node dist/agent/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "openid-client": "^6.8.4",
+    "ws": "^8.18.0",
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^22.13.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.7"
+  }
+}

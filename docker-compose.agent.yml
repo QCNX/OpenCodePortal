@@ -1,0 +1,31 @@
+# OpenCode Portal Agent — standalone deployment with pre-built image
+#
+# Usage:
+#   1. Set environment variables (or create .env file):
+#        AGENT_REGISTRATION_TOKEN=ocp-at-...   (per-instance token from Dashboard Deploy modal)
+#        GATEWAY_URL=ws://your-gateway:8080/agent/connect
+#        AGENT_TARGET_HOST=127.0.0.1
+#        AGENT_TARGET_PORT=4096
+#   2. docker compose -f docker-compose.agent.yml up -d
+#       (use wss:// for production with NPM TLS)
+#
+# The Agent uses host network to reach the local OpenCode Server on localhost.
+# Release images are published to GitHub Container Registry on GitHub tag releases.
+# Use a versioned image tag for production deployments.
+
+services:
+  agent:
+    image: ghcr.io/qcnx/opencode-portal-agent:latest
+    container_name: ocp-agent
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - agent-data:/app/data
+    environment:
+      - GATEWAY_URL=${GATEWAY_URL:-ws://localhost:8080/agent/connect}
+      - AGENT_REGISTRATION_TOKEN=${AGENT_REGISTRATION_TOKEN:?err}
+      - AGENT_TARGET_HOST=${AGENT_TARGET_HOST:-127.0.0.1}
+      - AGENT_TARGET_PORT=${AGENT_TARGET_PORT:-4096}
+
+volumes:
+  agent-data:

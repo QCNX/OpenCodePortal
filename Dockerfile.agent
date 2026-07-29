@@ -1,0 +1,30 @@
+# OpenCode Portal Agent — production image
+# Build: docker build -f Dockerfile.agent -t opencode-portal-agent .
+# Run:   docker run --network=host -e AGENT_TOKEN=... -v ./agent.config.yaml:/app/agent.config.yaml opencode-portal-agent
+
+FROM node:22-alpine AS builder
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@11.2.2 --activate
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile --prod=false
+
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN pnpm build
+
+# --- Runtime stage ---
+FROM node:22-alpine
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@11.2.2 --activate
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/dist ./dist
+
+# Agent needs host network to access localhost OpenCode
+RUN mkdir -p /app/data && chown -R node:node /app
+USER node
+CMD ["node", "dist/agent/index.js"]

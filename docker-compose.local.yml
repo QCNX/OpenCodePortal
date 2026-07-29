@@ -1,0 +1,71 @@
+# OpenCode Portal — same-machine deployment (Gateway + Agent + OpenCode Server on one host)
+#
+# When to use:
+#   Gateway and OpenCode Server deployed on the same host for single-machine development.
+#   This compose file starts both Gateway and Agent, avoiding manual runs of two compose files.
+#   Agent uses host networking to reach the host's OpenCode Server at 127.0.0.1:4096.
+#
+# vs. separate deployment:
+#   - docker-compose.gateway.yml: Gateway only (remote / public)
+#   - docker-compose.agent.yml:   Agent only (one per VM)
+#   - docker-compose.local.yml:   one-shot Gateway + Agent on the same machine
+#
+# Prerequisites:
+#   1. OpenCode Server running on the host (opencode serve --hostname 127.0.0.1 --port 4096)
+#   2. Portal has an instance created via Dashboard (to obtain AGENT_REGISTRATION_TOKEN)
+#
+# Quick start:
+#   1. cp data/config.yaml.example data/config.yaml && edit data/config.yaml
+#   2. cp .env.example .env && fill required env vars
+#   3. Create an instance in Dashboard, copy its assignedToken
+#   4. Edit .env, set AGENT_REGISTRATION_TOKEN=<assignedToken>
+#   5. docker compose -f docker-compose.local.yml up -d
+#   6. Visit http://localhost:8080/ to confirm Dashboard shows instance online
+#   7. Visit http://<instanceId>.localhost:8080/ to use OpenCode
+#
+# Notes:
+#   - An Agent is still required on the same machine (Agent-only WSS tunnel architecture;
+#     Gateway never connects directly to OpenCode)
+#   - Agent uses host networking to reach the host's 127.0.0.1:4096
+#   - If GATEWAY_PORT is changed, sync Agent's GATEWAY_URL (both default to 8080)
+#   - Production should use separate deployment (Gateway on public, Agent on each VM)
+#
+# Image source: GitHub Container Registry (published on GitHub tag releases).
+
+services:
+  gateway:
+    image: ghcr.io/qcnx/opencode-portal-gateway:latest
+    container_name: ocp-portal
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      - PORTAL_DATA_DIR=/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/health',r=>{process.exit(r.statusCode===200?0:1)})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  agent:
+    image: ghcr.io/qcnx/opencode-portal-agent:latest
+    container_name: ocp-agent
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      gateway:
+        condition: service_healthy
+    volumes:
+      - agent-data:/app/data
+    environment:
+      - GATEWAY_URL=${GATEWAY_URL:-ws://127.0.0.1:8080/agent/connect}
+      - AGENT_REGISTRATION_TOKEN=${AGENT_REGISTRATION_TOKEN:?err}
+      - AGENT_TARGET_HOST=${AGENT_TARGET_HOST:-127.0.0.1}
+      - AGENT_TARGET_PORT=${AGENT_TARGET_PORT:-4096}
+
+volumes:
+  agent-data:

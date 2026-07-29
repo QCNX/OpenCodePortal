@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.git/
+.gitea/
+data/
+*.log
+*.md
+!README.md
+!docs/setup-guide/*.md
+.env
+.env.*
+*.test.ts
+vitest.config.ts
+agent.config.yaml
+config.yaml
+docs/*
+!docs/setup-guide/

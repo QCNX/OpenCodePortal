@@ -1,0 +1,38 @@
+# OpenCode Portal — production image
+# Build: docker build -f Dockerfile.gateway -t opencode-portal .
+
+FROM node:22-alpine AS builder
+WORKDIR /app
+
+# Enable pnpm via corepack
+RUN corepack enable && corepack prepare pnpm@11.2.2 --activate
+
+# Install dependencies
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile --prod=false
+
+# Copy source and build
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN pnpm build
+
+# --- Runtime stage ---
+FROM node:22-alpine
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@11.2.2 --activate
+
+# Copy production deps and build output
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/dist ./dist
+
+# Copy setup guide markdown files (served at runtime)
+COPY docs/setup-guide/ ./docs/setup-guide/
+
+# Ensure data directory exists and is owned by the runtime user
+RUN mkdir -p /app/data && chown -R node:node /app
+USER node
+
+EXPOSE 8080
+CMD ["node", "dist/server/index.js"]

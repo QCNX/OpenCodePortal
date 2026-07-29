@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: corepack enable && corepack prepare pnpm@11.2.2 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm exec tsc --noEmit
+
+      - name: Run unit tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install chromium --with-deps --only-shell
+
+      - name: Run end-to-end tests
+        run: bash tests/e2e.sh
+
+      - name: Run browser tests
+        run: pnpm exec playwright test
+
+      - name: Verify Gateway image build
+        run: docker build --provenance=false -f Dockerfile.gateway -t ocp-gateway:ci .
+
+      - name: Verify Agent image build
+        run: docker build --provenance=false -f Dockerfile.agent -t ocp-agent:ci .
