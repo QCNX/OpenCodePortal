@@ -1,11 +1,12 @@
 import * as http from 'http';
 import { InstanceRegistry } from '../registry';
 import type { AgentTransport } from '../agent-transport';
-import { nextHttpRequestId } from '../../shared/protocol';
 import { newTraceId, TRACE_HEADER } from '../../shared/trace';
 import { createLogger, Logger } from '../../shared/logger';
 import { stripQueryParam } from '../http/query';
 import { serializeHttpRequest } from './raw-http';
+import { parseByteHeader, buildBasicAuthHeader } from '../../shared/http-headers';
+import { MAX_PROXY_REQUEST_BODY_BYTES } from '../../shared/types';
 import {
   ProxyRequestState,
   MAX_PENDING_REQUESTS,
@@ -13,16 +14,6 @@ import {
 } from './request-state';
 
 const log: Logger = createLogger('gateway');
-
-/** Maximum buffered request body accepted by the HTTP proxy (50 MiB). */
-export const MAX_PROXY_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
-
-function parseByteHeader(value: string | string[] | undefined): number | null {
-  const raw = Array.isArray(value) ? value[0] : value;
-  if (!raw) return null;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-}
 
 export interface AgentRequestProxyOptions {
   registry: InstanceRegistry;
@@ -66,8 +57,10 @@ export class AgentRequestProxy {
 
     const password = this.options.registry.getOpencodePassword(instanceId);
     if (password) {
-      const user = this.options.registry.getOpencodeUser(instanceId) || 'opencode';
-      req.headers['authorization'] = 'Basic ' + Buffer.from(user + ':' + password).toString('base64');
+      req.headers['authorization'] = buildBasicAuthHeader(
+        this.options.registry.getOpencodeUser(instanceId),
+        password,
+      );
     } else {
       delete req.headers['authorization'];
     }
@@ -100,24 +93,23 @@ export class AgentRequestProxy {
       const body = Buffer.concat(chunks);
       const upstreamPath = stripQueryParam(path, 'auth_token');
       const rawRequest = serializeHttpRequest(req, body, upstreamPath);
-      const requestId = nextHttpRequestId();
-
-      state.pendingRequests.set(requestId, res);
-      state.requestTraces.set(requestId, traceId);
-      state.requestInstances.set(requestId, instanceId);
-
-      const timeout = setTimeout(() => {
-        this.cancelProxyRequest(instanceId, requestId, traceId);
-        if (!res.headersSent) {
-          res.writeHead(504, { 'Content-Type': 'text/plain' });
-          res.end('Gateway Timeout');
-        }
-        log.warn('proxy_timeout', 'proxy request timed out', { instanceId, requestId }, traceId);
-      }, 60_000);
-      state.requestTimeouts.set(requestId, timeout);
-
-      res.once('close', () => {
-        this.cancelProxyRequest(instanceId, requestId, traceId);
+      const requestId = state.registerRequest({
+        res,
+        traceId,
+        instanceId,
+        timeoutMs: 60_000,
+        onTimeout: (requestId, traceId) => {
+          this.options.getTransport()?.sendControlToAgent(instanceId, { type: 'request_cancel', requestId });
+          if (!res.headersSent) {
+            res.writeHead(504, { 'Content-Type': 'text/plain' });
+            res.end('Gateway Timeout');
+          }
+          log.warn('proxy_timeout', 'proxy request timed out', { instanceId, requestId }, traceId);
+        },
+        onClientClose: (requestId, traceId) => {
+          this.options.getTransport()?.sendControlToAgent(instanceId, { type: 'request_cancel', requestId });
+          log.info('proxy_cancel', 'canceled upstream proxy request', { instanceId, requestId }, traceId);
+        },
       });
 
       const sent = this.options.getTransport()?.sendToAgent(instanceId, requestId, rawRequest);
@@ -128,13 +120,5 @@ export class AgentRequestProxy {
         log.error('proxy_error', 'agent connection lost', { instanceId, requestId }, traceId);
       }
     });
-  }
-
-  private cancelProxyRequest(instanceId: string, requestId: number, traceId?: string): void {
-    const state = this.options.state;
-    if (!state.pendingRequests.has(requestId) && !state.streamingRequests.has(requestId)) return;
-    this.options.getTransport()?.sendControlToAgent(instanceId, { type: 'request_cancel', requestId });
-    state.cleanupRequest(requestId);
-    log.info('proxy_cancel', 'canceled upstream proxy request', { instanceId, requestId }, traceId);
   }
 }

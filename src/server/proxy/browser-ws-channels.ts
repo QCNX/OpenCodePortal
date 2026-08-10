@@ -10,6 +10,7 @@ import type { ChannelOpenedMessage, ChannelErrorMessage, ChannelClosedMessage } 
 import { parseRequestHost } from '../http/host-routing';
 import { stripQueryParam } from '../http/query';
 import { AuthGate } from '../auth/gate';
+import { buildBasicAuthHeader } from '../../shared/http-headers';
 
 const log: Logger = createLogger('gateway');
 const MAX_ACTIVE_WS_CHANNELS = 1000;
@@ -87,9 +88,10 @@ export class BrowserWsChannels {
 
       const pwd = this.options.registry.getOpencodePassword(instanceId);
       if (pwd) {
-        const user = this.options.registry.getOpencodeUser(instanceId) || 'opencode';
-        passthroughHeaders['authorization'] =
-          'Basic ' + Buffer.from(user + ':' + pwd).toString('base64');
+        passthroughHeaders['authorization'] = buildBasicAuthHeader(
+          this.options.registry.getOpencodeUser(instanceId),
+          pwd,
+        );
       }
 
       transport.sendControlToAgent(instanceId, {

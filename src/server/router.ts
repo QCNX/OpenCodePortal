@@ -18,17 +18,19 @@ import * as http from 'http';
 import { Duplex } from 'stream';
 import { InstanceRegistry } from './registry';
 import type { AgentTransport } from './agent-transport';
+import { isChannelRequestId } from '../shared/protocol';
 import { createLogger, Logger } from '../shared/logger';
 import type { ChannelOpenedMessage, ChannelErrorMessage, ChannelClosedMessage } from '../shared/types';
 import type { OidcClient } from './auth/oidc-client';
 import { parseRequestHost, isDevApexHost } from './http/host-routing';
+import { isSecureRequest } from './http/cookies';
 import { handleHealthRoute, handlePortalStaticRoute } from './http/static-routes';
 import { BrowserAuthRoutes } from './auth/browser-routes';
 import { DefaultResponseTransformer } from './proxy/response-transformer';
 import { loadSetupGuideContent, type SetupGuideContent } from './setup-guide/loader';
 import { InstancesApi } from './api/instances-api';
 import { toInstanceView } from './api/instance-view';
-import { detectPortalLocale } from './webui/locale';
+import { detectPortalLocale } from './i18n';
 import { AuthGate } from './auth/gate';
 import { ProxyRequestState } from './proxy/request-state';
 import { handleSubdomainProxyRoute } from './proxy/subdomain-route';
@@ -36,6 +38,7 @@ import { handleAgentHttpResponse } from './proxy/agent-http-response';
 import { AgentRequestProxy } from './proxy/request-forwarder';
 import { BrowserWsChannels } from './proxy/browser-ws-channels';
 import { renderDashboardPage } from './webui/dashboard-page';
+import { DashboardEventBus } from './webui/dashboard-event-bus';
 
 const log: Logger = createLogger('gateway');
 
@@ -51,6 +54,7 @@ export class Router {
   private browserWsChannels: BrowserWsChannels;
   private responseTransformer: DefaultResponseTransformer;
   private setupGuide: SetupGuideContent | null = null;
+  private dashboardBus: DashboardEventBus | undefined;
 
   constructor(
     private registry: InstanceRegistry,
@@ -104,6 +108,11 @@ export class Router {
   setOidcClient(client: OidcClient): void {
     this.oidcClient = client;
     this.authGate.setOidcClient(client);
+  }
+
+  /** Wire the Dashboard SSE event bus (created by the entry point). */
+  setDashboardBus(bus: DashboardEventBus): void {
+    this.dashboardBus = bus;
   }
 
   // -- Registry helpers -------------------------------------------------------
@@ -230,7 +239,7 @@ export class Router {
     // mechanism is masked (sessions are the source of truth).
     if (!this.oidcMode && this.sharedSecret && this.checkAuth(req) && !this.checkAuthCookie(req)) {
       log.info('cookie_auth_set', 'auth cookie issued', { method: 'Bearer/token' });
-      this.authGate.setAuthCookie(res, req.headers.host, req.headers['x-forwarded-proto'] === 'https');
+      this.authGate.setAuthCookie(res, req.headers.host, isSecureRequest(req));
     }
 
     // --- Apex: Dashboard & portal routes ---
@@ -241,8 +250,10 @@ export class Router {
       return;
     }
 
-    if (url === '/events') {
-      this.handleSSE(req, res);
+    if (url === '/events' && this.dashboardBus) {
+      // Dashboard live updates are served by the injected event bus (wired
+      // in index.ts); without one, the request falls through to the apex 404.
+      this.dashboardBus.subscribe(res);
       return;
     }
 
@@ -254,6 +265,13 @@ export class Router {
 
   /** Handle binary data from Agent (response to a forwarded request OR WS channel data). */
   handleAgentData(instanceId: string, requestId: number, payload: Buffer): void {
+    // Explicit dispatch by ID namespace: channel IDs carry WS channel data,
+    // HTTP IDs carry HTTP/SSE proxy responses.
+    if (isChannelRequestId(requestId)) {
+      this.browserWsChannels.forwardAgentData(requestId, payload);
+      return;
+    }
+
     if (handleAgentHttpResponse({
       instanceId,
       requestId,
@@ -261,10 +279,6 @@ export class Router {
       state: this.proxyState,
       transformer: this.responseTransformer,
     })) {
-      return;
-    }
-
-    if (this.browserWsChannels.forwardAgentData(requestId, payload)) {
       return;
     }
 
@@ -295,44 +309,6 @@ export class Router {
   /** Clean up all pending/streaming HTTP requests for a disconnected agent. */
   cleanupInstanceRequests(instanceId: string): void {
     this.proxyState.cancelForInstance(instanceId, log);
-  }
-
-  // -- SSE (Server-Sent Events) for dashboard live updates -------------------
-
-  private sseClients = new Set<http.ServerResponse>();
-
-  private handleSSE(_req: http.IncomingMessage, res: http.ServerResponse): void {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    });
-    this.sseClients.add(res);
-    this.pushDashboardInstances();
-
-    const interval = setInterval(() => {
-      this.pushDashboardInstances();
-    }, 2000);
-
-    res.on('close', () => {
-      clearInterval(interval);
-      this.sseClients.delete(res);
-    });
-  }
-
-  /** Push current instance list to all connected Dashboard SSE clients. */
-  broadcastDashboardUpdate(): void {
-    this.pushDashboardInstances();
-  }
-
-  private pushDashboardInstances(): void {
-    if (this.sseClients.size === 0) return;
-    const payload = `data: ${JSON.stringify({
-      instances: this.registry.list().map(i => this.enrichInstance(i)),
-    })}\n\n`;
-    for (const client of this.sseClients) {
-      client.write(payload);
-    }
   }
 
   // -- Dashboard -------------------------------------------------------------

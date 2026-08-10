@@ -15,23 +15,20 @@ import * as http from 'http';
 import WebSocket from 'ws';
 import { AgentTunnel } from './tunnel';
 import { createLogger, Logger } from '../shared/logger';
-import { encodeWsTunnelPayload, decodeWsTunnelPayload } from '../shared/protocol';
+import { encodeWsTunnelPayload, decodeWsTunnelPayload, isChannelRequestId } from '../shared/protocol';
 import { TRACE_HEADER } from '../shared/trace';
-import { headerToString } from '../shared/http-headers';
+import {
+  headerToString,
+  parseByteHeader,
+  parseHeaderBlock,
+  isEventStreamContentType,
+} from '../shared/http-headers';
+import { MAX_PROXY_RESPONSE_BODY_BYTES } from '../shared/types';
 
 const log: Logger = createLogger('agent');
 
-/** Maximum buffered non-SSE upstream response body accepted by the Agent (50 MiB). */
-export const MAX_PROXY_RESPONSE_BODY_BYTES = 50 * 1024 * 1024;
 const MAX_PENDING_CHANNEL_MESSAGES = 100;
 const MAX_PENDING_CHANNEL_BYTES = 1024 * 1024;
-
-function parseByteHeader(value: string | string[] | undefined): number | null {
-  const raw = Array.isArray(value) ? value[0] : value;
-  if (!raw) return null;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-}
 
 
 interface ActiveHttpRequest {
@@ -45,7 +42,6 @@ export class Forwarder {
   private activeChannels = new Map<number, WebSocket>();
   private pendingChannelMessages = new Map<number, { data: Buffer; isBinary: boolean }[]>();
   private activeHttpRequests = new Map<number, ActiveHttpRequest>();
-  private canceledHttpRequests = new Set<number>();
   private activeRequestCount = 0;
 
   constructor(
@@ -66,44 +62,57 @@ export class Forwarder {
   }
 
   /**
-   * Handle a forwarded request from Gateway.
-   * If requestId matches an active WS channel → relay to localhost WS.
-   * Otherwise → parse as raw HTTP and proxy to localhost.
+   * Handle a forwarded frame from Gateway.
+   * Explicit dispatch by ID namespace: channel IDs relay browser WS data to
+   * the localhost WebSocket; HTTP IDs are parsed as raw HTTP and proxied.
    */
   handleRequest(requestId: number, payload: Buffer): void {
-    // Check if this is WS channel data
-    const channelWs = this.activeChannels.get(requestId);
-    if (channelWs) {
-      const decoded = decodeWsTunnelPayload(payload);
-      if (!decoded) return;
-
-      if (channelWs.readyState === WebSocket.OPEN) {
-        channelWs.send(decoded.data, { binary: decoded.isBinary });
-        return;
-      }
-      // Buffer messages while connecting
-      if (channelWs.readyState === WebSocket.CONNECTING) {
-        const buf = this.pendingChannelMessages.get(requestId) || [];
-        const pendingBytes = buf.reduce((sum, msg) => sum + msg.data.length, 0);
-        if (buf.length >= MAX_PENDING_CHANNEL_MESSAGES || pendingBytes + decoded.data.length > MAX_PENDING_CHANNEL_BYTES) {
-          log.warn('ws_channel_backpressure', 'pending channel buffer limit exceeded', {
-            channelId: requestId,
-            messages: buf.length,
-            bytes: pendingBytes + decoded.data.length,
-          });
-          channelWs.close(1013, 'pending buffer limit exceeded');
-          this.activeChannels.delete(requestId);
-          this.pendingChannelMessages.delete(requestId);
-          this.tunnel.sendChannelControl({ type: 'channel_error', channelId: requestId, message: 'pending buffer limit exceeded' });
-          return;
-        }
-        buf.push({ data: decoded.data, isBinary: decoded.isBinary });
-        this.pendingChannelMessages.set(requestId, buf);
-        return;
-      }
-      // Channel is closing/closed → discard
+    if (isChannelRequestId(requestId)) {
+      this.forwardChannelData(requestId, payload);
       return;
     }
+    this.forwardHttpRequest(requestId, payload);
+  }
+
+  /** Relay browser WS channel data to the localhost WebSocket (or discard). */
+  private forwardChannelData(requestId: number, payload: Buffer): void {
+    const channelWs = this.activeChannels.get(requestId);
+    if (!channelWs) {
+      // Channel-namespace frame with no active channel (stale/timed-out) → discard
+      return;
+    }
+    const decoded = decodeWsTunnelPayload(payload);
+    if (!decoded) return;
+
+    if (channelWs.readyState === WebSocket.OPEN) {
+      channelWs.send(decoded.data, { binary: decoded.isBinary });
+      return;
+    }
+    // Buffer messages while connecting
+    if (channelWs.readyState === WebSocket.CONNECTING) {
+      const buf = this.pendingChannelMessages.get(requestId) || [];
+      const pendingBytes = buf.reduce((sum, msg) => sum + msg.data.length, 0);
+      if (buf.length >= MAX_PENDING_CHANNEL_MESSAGES || pendingBytes + decoded.data.length > MAX_PENDING_CHANNEL_BYTES) {
+        log.warn('ws_channel_backpressure', 'pending channel buffer limit exceeded', {
+          channelId: requestId,
+          messages: buf.length,
+          bytes: pendingBytes + decoded.data.length,
+        });
+        channelWs.close(1013, 'pending buffer limit exceeded');
+        this.activeChannels.delete(requestId);
+        this.pendingChannelMessages.delete(requestId);
+        this.tunnel.sendChannelControl({ type: 'channel_error', channelId: requestId, message: 'pending buffer limit exceeded' });
+        return;
+      }
+      buf.push({ data: decoded.data, isBinary: decoded.isBinary });
+      this.pendingChannelMessages.set(requestId, buf);
+      return;
+    }
+    // Channel is closing/closed → discard
+  }
+
+  /** Parse a raw HTTP request frame and proxy it to localhost OpenCode. */
+  private forwardHttpRequest(requestId: number, payload: Buffer): void {
     const parsed = parseRawHttp(payload);
     if (!parsed) {
       log.error('forward_error', 'failed to parse raw http', { requestId });
@@ -208,12 +217,20 @@ export class Forwarder {
     req.end();
   }
 
-  /** Cancel a forwarded HTTP/SSE request whose browser client went away. */
+  /**
+   * Cancel a forwarded HTTP/SSE request whose browser client went away.
+   *
+   * No tombstone set is needed beyond the `canceled` flag on the active entry:
+   * finishRequest() is idempotent (delete() returns false on a second call),
+   * so a late `error`/`end` event from the destroyed streams can never
+   * double-decrement the active count. The destroy() error events are emitted
+   * on the next tick, by which time the entry is already gone — the flag only
+   * guards the synchronous window inside this method.
+   */
   cancelRequest(requestId: number): void {
     const active = this.activeHttpRequests.get(requestId);
     if (!active) return;
     active.canceled = true;
-    this.markCanceled(requestId);
     active.res?.destroy();
     active.req.destroy();
     this.finishRequest(requestId);
@@ -344,22 +361,13 @@ export class Forwarder {
 
   private finishRequest(requestId: number): boolean {
     if (!this.activeHttpRequests.delete(requestId)) return false;
-    this.canceledHttpRequests.delete(requestId);
     this.activeRequestCount = Math.max(0, this.activeRequestCount - 1);
     this.tunnel.setSessionCount(this.activeRequestCount);
     return true;
   }
 
   private isCanceled(requestId: number): boolean {
-    return this.canceledHttpRequests.has(requestId) || (this.activeHttpRequests.get(requestId)?.canceled ?? false);
-  }
-
-  private markCanceled(requestId: number): void {
-    this.canceledHttpRequests.add(requestId);
-    const cleanup = setTimeout(() => {
-      this.canceledHttpRequests.delete(requestId);
-    }, 60_000);
-    cleanup.unref?.();
+    return this.activeHttpRequests.get(requestId)?.canceled ?? false;
   }
 
   private sendErrorResponse(requestId: number, statusCode: number, message: string): void {
@@ -373,11 +381,6 @@ export class Forwarder {
     );
     this.tunnel.sendBinary(requestId, buf);
   }
-}
-
-/** True when upstream response should be streamed (not buffered). */
-export function isEventStreamContentType(contentType: string): boolean {
-  return contentType.toLowerCase().includes('text/event-stream');
 }
 
 /** Serialize HTTP/1.1 response status line + headers (no body). */
@@ -429,23 +432,5 @@ export function parseRawHttp(data: Buffer): ParsedRequest | null {
   const method = requestLine[0];
   const path = requestLine[1];
 
-  // Headers
-  const headers: Record<string, string | string[]> = {};
-  for (let i = 1; i < lines.length; i++) {
-    const colon = lines[i].indexOf(':');
-    if (colon > 0) {
-      const key = lines[i].substring(0, colon).trim().toLowerCase();
-      const value = lines[i].substring(colon + 1).trim();
-      const existing = headers[key];
-      if (existing === undefined) {
-        headers[key] = value;
-      } else if (Array.isArray(existing)) {
-        existing.push(value);
-      } else {
-        headers[key] = [existing, value];
-      }
-    }
-  }
-
-  return { method, path, headers, body };
+  return { method, path, headers: parseHeaderBlock(headerSection), body };
 }

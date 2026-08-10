@@ -1,4 +1,5 @@
 import * as http from 'http';
+import { parseHeaderBlock } from '../../shared/http-headers';
 
 export function serializeHttpRequest(req: http.IncomingMessage, body: Buffer, path: string): Buffer {
   const method = req.method || 'GET';
@@ -42,23 +43,5 @@ export function parseRawResponse(data: Buffer): ParsedResponse | null {
   const statusCode = parseInt(statusParts[1] || '502', 10);
   const statusMessage = statusParts.slice(2).join(' ') || '';
 
-  // Headers
-  const headers: Record<string, string | string[]> = {};
-  for (let i = 1; i < lines.length; i++) {
-    const colon = lines[i].indexOf(':');
-    if (colon > 0) {
-      const key = lines[i].substring(0, colon).trim().toLowerCase();
-      const value = lines[i].substring(colon + 1).trim();
-      const existing = headers[key];
-      if (existing === undefined) {
-        headers[key] = value;
-      } else if (Array.isArray(existing)) {
-        existing.push(value);
-      } else {
-        headers[key] = [existing, value];
-      }
-    }
-  }
-
-  return { statusCode, statusMessage, headers, body };
+  return { statusCode, statusMessage, headers: parseHeaderBlock(headerSection), body };
 }

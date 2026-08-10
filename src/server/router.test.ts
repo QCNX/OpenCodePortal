@@ -3,7 +3,10 @@
 // ---------------------------------------------------------------------------
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as http from 'http';
 import { Router } from './router';
+import { DashboardEventBus } from './webui/dashboard-event-bus';
+import { toInstanceView } from './api/instance-view';
 import { InstanceRegistry } from './registry';
 import {
   APEX_HOST,
@@ -190,7 +193,7 @@ describe('Router integration', () => {
         close: () => {},
         send: () => {},
       } as any;
-      registry.register('vm-online', mockWs, 90_000, () => {});
+      registry.register('vm-online', mockWs, 90_000);
       routerWithAuth.setTransport({ sendToAgent: () => true } as any);
 
       const auth = 'Basic ' + Buffer.from('opencode:secret123').toString('base64');
@@ -216,7 +219,7 @@ describe('Router integration', () => {
         close: () => {},
         send: () => {},
       } as any;
-      registry.register('vm-online', mockWs, 90_000, () => {});
+      registry.register('vm-online', mockWs, 90_000);
       routerWithAuth.setTransport({ sendToAgent: () => true } as any);
 
       const token = Buffer.from('opencode:secret123').toString('base64');
@@ -247,7 +250,7 @@ describe('Router integration', () => {
         close: () => {},
         send: () => {},
       } as any;
-      registry.register('vm-online', mockWs, 90_000, () => {});
+      registry.register('vm-online', mockWs, 90_000);
       routerWithAuth.setTransport({
         sendToAgent: (_id: string, _reqId: number, payload: Buffer) => {
           captured = payload;
@@ -507,29 +510,66 @@ describe('Router integration', () => {
       expect(agentRouter.proxyState.requestTraces.has(100)).toBe(false);
       expect(agentRouter.proxyState.requestTimeouts.has(100)).toBe(false);
     });
+
+    it('routes channel-namespace IDs to WS channels, never to HTTP parsing', () => {
+      // The ID namespace split (high bit = channel) is the dispatch contract
+      // between Gateway and Agent (shared/protocol isChannelRequestId).
+      // A channel-ID frame must never be parsed as HTTP even when its payload
+      // looks like an HTTP response — doing so would 502 the wrong pending
+      // request. The WS channel data path itself is covered by
+      // browser-ws-channels.test.ts.
+      const res = createMockRes();
+      agentRouter.proxyState.pendingRequests.set(777, res as any);
+      agentRouter.proxyState.requestTraces.set(777, 'trace-http');
+
+      const httpLookalikeFrame = Buffer.from(
+        'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html></html>',
+      );
+      agentRouter.handleAgentData('vm-1', 0x8000_0001, httpLookalikeFrame);
+
+      expect(res.headersSent).toBe(false);
+      expect(res.statusCode).toBe(0);
+      expect(agentRouter.proxyState.pendingRequests.has(777)).toBe(true);
+    });
   });
 
   describe('dashboard SSE', () => {
-    function createMockWs(): any {
-      const handlers: Record<string, Function[]> = {};
-      return {
-        readyState: 1,
-        send: () => {},
-        close: () => {},
-        on(event: string, cb: Function) {
-          (handlers[event] ||= []).push(cb);
+    it('/events delegates the response to the injected DashboardEventBus', () => {
+      const subscribed: http.ServerResponse[] = [];
+      const bus = {
+        subscribe: (res: http.ServerResponse) => {
+          subscribed.push(res);
         },
-        _triggerClose(code: number, reason: string) {
-          for (const cb of handlers.close || []) cb(code, Buffer.from(reason));
-        },
-      };
-    }
+      } as unknown as DashboardEventBus;
+      router.setDashboardBus(bus);
 
-    it('broadcastDashboardUpdate pushes instance list to connected SSE clients', () => {
-      registry.create('vm-1', 'VM One', []);
-      const ws = createMockWs();
-      registry.register('vm-1', ws, 90_000, () => {});
+      const req = createMockReq('/events', 'GET', APEX_HOST);
+      const res = createMockRes();
+      router.handleRequest(req, res as any);
 
+      expect(subscribed).toHaveLength(1);
+      expect(subscribed[0]).toBe(res);
+    });
+
+    it('returns 404 for /events when no event bus is wired', () => {
+      const req = createMockReq('/events', 'GET', APEX_HOST);
+      const res = createMockRes();
+
+      router.handleRequest(req, res as any);
+
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('pushes registry snapshots to SSE clients on publish (heartbeat → dashboard chain)', () => {
+      // Mirrors the index.ts wiring: the bus provider reads the registry and
+      // onInstanceMetricsUpdate/onAgentDisconnect call bus.publish() — a real
+      // instance change must reach the connected SSE client's payload.
+      const bus = new DashboardEventBus({
+        listInstances: () => registry.list().map((i) => toInstanceView(registry, i)),
+      });
+      router.setDashboardBus(bus);
+
+      const req = createMockReq('/events', 'GET', APEX_HOST);
       const res = createMockRes();
       const writes: string[] = [];
       res.write = (chunk: string) => {
@@ -539,17 +579,15 @@ describe('Router integration', () => {
       res.on = (event: string, cb: Function) => {
         if (event === 'close') res._closeCallbacks.push(cb);
       };
-
-      const req = createMockReq('/events', 'GET', APEX_HOST);
       router.handleRequest(req, res as any);
-      writes.length = 0;
+      expect(res.statusCode).toBe(200);
 
-      registry.heartbeat('vm-1', 4, 90_000, () => {});
-      router.broadcastDashboardUpdate();
+      // New instance appears → publish() (as index.ts does on heartbeat
+      // metrics change) → the open SSE stream carries the fresh snapshot.
+      registry.create('vm-live', 'Live VM', []);
+      bus.publish();
 
-      expect(writes).toHaveLength(1);
-      const payload = JSON.parse(writes[0].replace(/^data: /, '').trim());
-      expect(payload.instances.find((i: { id: string }) => i.id === 'vm-1')?.sessionCount).toBe(4);
+      expect(writes.some((w) => w.includes('vm-live') && w.includes('"status":"offline"'))).toBe(true);
     });
   });
 });

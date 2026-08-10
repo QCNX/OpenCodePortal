@@ -13,7 +13,7 @@
 
 import WebSocket from 'ws';
 import { AgentConfig, ControlMessage, RegisteredMessage, ChannelOpenMessage, ChannelCloseMessage, RequestCancelMessage } from '../shared/types';
-import { isControlMessage, encodeFrame, decodeFrame } from '../shared/protocol';
+import { tryParseControlMessage, encodeFrame, decodeFrame } from '../shared/protocol';
 import { createLogger, Logger } from '../shared/logger';
 import { getPortalVersion } from '../shared/version';
 import { probeOpencodeVersion } from './version-probe';
@@ -150,18 +150,12 @@ export class AgentTunnel {
   private handleMessage(data: WebSocket.Data): void {
     const raw = Buffer.isBuffer(data) ? data : Buffer.from(data as string);
 
-    // Try JSON control message first
-    try {
-      const text = raw.toString('utf8');
-      if (text.startsWith('{')) {
-        const msg = JSON.parse(text);
-        if (isControlMessage(msg)) {
-          this.handleControl(msg);
-          return;
-        }
-      }
-    } catch {
-      // Not JSON → treat as binary
+    // Text frames carry JSON control messages; anything else is a binary
+    // frame (data forwarding from Gateway → localhost).
+    const control = tryParseControlMessage(raw);
+    if (control) {
+      this.handleControl(control);
+      return;
     }
 
     // Binary frame → data forwarding

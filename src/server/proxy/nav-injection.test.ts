@@ -126,8 +126,12 @@ describe('injectNavBar', () => {
     expect(str).toContain('儀表板');
     expect(str).toContain('切換實例');
     expect(str).toContain('(離線)');
-    expect(str).toContain("return 'zh-TW'");
-    expect(str).toContain("return 'zh-CN'");
+    expect(str).toContain('var LOCALE_RULES=');
+    expect(str).toContain('"locale":"zh-TW"');
+    expect(str).toContain('"locale":"zh-CN"');
+    expect(str).toContain('"zh-sg"');
+    expect(str).toContain('"zh-hant"');
+    expect(str).toContain('"zh-hans"');
   });
 
   it('keeps the audited OpenCode host component contract', () => {

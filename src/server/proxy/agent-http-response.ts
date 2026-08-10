@@ -3,7 +3,7 @@ import { parseRawResponse } from './raw-http';
 import { ProxyRequestState } from './request-state';
 import type { IResponseTransformer } from './response-transformer';
 import { overrideCacheHeaders } from './cache-headers';
-import { headerToString } from '../../shared/http-headers';
+import { headerToString, isEventStreamContentType } from '../../shared/http-headers';
 
 const log: Logger = createLogger('gateway');
 
@@ -54,23 +54,20 @@ export function handleAgentHttpResponse(options: AgentHttpResponseOptions): bool
     }
 
     const contentType = headerToString(parsed.headers['content-type']);
-    if (contentType.toLowerCase().includes('text/event-stream')) {
-      state.pendingRequests.delete(requestId);
-      const timeout = state.requestTimeouts.get(requestId);
-      if (timeout) {
-        clearTimeout(timeout);
-        state.requestTimeouts.delete(requestId);
-      }
-
+    if (isEventStreamContentType(contentType)) {
       const headers = { ...parsed.headers };
       delete headers['content-length'];
       delete headers['transfer-encoding'];
+
+      // Clear the timeout and move pending → streaming (SSE multi-frame).
+      // If the request is no longer pending (timed out / closed / canceled),
+      // there is nothing to stream to — drop the frame.
+      if (!state.promoteToStreaming(requestId)) return true;
 
       res.writeHead(parsed.statusCode, parsed.statusMessage, headers);
       if (parsed.body.length > 0) {
         res.write(parsed.body);
       }
-      state.streamingRequests.set(requestId, { res, traceId });
       log.info('http_response', 'sse stream started', { instanceId, statusCode: parsed.statusCode, requestId }, traceId);
       return true;
     }

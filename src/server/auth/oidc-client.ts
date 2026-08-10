@@ -15,6 +15,7 @@ import * as oidc from 'openid-client';
 import { OidcConfig } from '../../shared/types';
 import { createLogger, Logger } from '../../shared/logger';
 import { authCookieDomain } from '../http/host-routing';
+import { appendSetCookie, parseCookies, isSecureRequest } from '../http/cookies';
 
 const log: Logger = createLogger('gateway');
 
@@ -133,7 +134,7 @@ export class OidcClient {
       state,
       nonce,
     });
-    this.setTxCookie(res, tx, req.headers.host, this.isSecure(req));
+    this.setTxCookie(res, tx, req.headers.host, isSecureRequest(req));
     res.writeHead(302, { Location: redirectUrl.href });
     res.end();
   }
@@ -147,7 +148,7 @@ export class OidcClient {
 
     const tx = this.readTxCookie(req);
     if (!tx) {
-      this.clearTxCookie(res, req.headers.host, this.isSecure(req));
+      this.clearTxCookie(res, req.headers.host, isSecureRequest(req));
       res.writeHead(400, { 'Content-Type': 'text/plain' });
       res.end('Login session expired or missing — please retry.');
       log.warn('oidc_callback', 'missing or invalid login transaction');
@@ -170,13 +171,13 @@ export class OidcClient {
 
       const sessionId = this.sessionStore.create(user, tokenResponse.access_token, tokenResponse.refresh_token);
 
-      this.clearTxCookie(res, req.headers.host, this.isSecure(req));
-      this.appendCookie(res, this.sessionCookie(sessionId, SESSION_TTL_MS, req.headers.host, this.isSecure(req)));
+      this.clearTxCookie(res, req.headers.host, isSecureRequest(req));
+      appendSetCookie(res, this.sessionCookie(sessionId, SESSION_TTL_MS, req.headers.host, isSecureRequest(req)));
       res.writeHead(302, { Location: tx.returnTo });
       res.end();
       log.info('oidc_login', 'user logged in', { sub: user.sub });
     } catch (err: any) {
-      this.clearTxCookie(res, req.headers.host, this.isSecure(req));
+      this.clearTxCookie(res, req.headers.host, isSecureRequest(req));
       log.error('oidc_callback', 'oidc callback error', { error: err.message });
       res.writeHead(500, { 'Content-Type': 'text/plain' });
       res.end('Authentication failed');
@@ -185,15 +186,15 @@ export class OidcClient {
 
   /** Local logout: destroy the Gateway session and clear the cookie. */
   logout(req: http.IncomingMessage, res: http.ServerResponse): void {
-    const sid = this.parseCookie(req, SESSION_COOKIE);
+    const sid = parseCookies(req)[SESSION_COOKIE];
     if (sid) this.sessionStore.delete(sid);
-    this.appendCookie(res, this.sessionCookie('', 0, req.headers.host, this.isSecure(req)));
+    appendSetCookie(res, this.sessionCookie('', 0, req.headers.host, isSecureRequest(req)));
     res.writeHead(302, { Location: '/login' });
     res.end();
   }
 
   getSession(req: http.IncomingMessage): Session | undefined {
-    const sid = this.parseCookie(req, SESSION_COOKIE);
+    const sid = parseCookies(req)[SESSION_COOKIE];
     return sid ? this.sessionStore.get(sid) : undefined;
   }
 
@@ -221,11 +222,11 @@ export class OidcClient {
     const domain = authCookieDomain(hostHeader, this.cookieDomain);
     const domainAttr = domain ? `; Domain=${domain}` : '';
     const secureAttr = secure ? '; Secure' : '';
-    this.appendCookie(res, `${TX_COOKIE}=${payload}.${sig}; HttpOnly; SameSite=Lax; Path=/${domainAttr}${secureAttr}; Max-Age=${TX_TTL_MS / 1000}`);
+    appendSetCookie(res, `${TX_COOKIE}=${payload}.${sig}; HttpOnly; SameSite=Lax; Path=/${domainAttr}${secureAttr}; Max-Age=${TX_TTL_MS / 1000}`);
   }
 
   private readTxCookie(req: http.IncomingMessage): LoginTx | undefined {
-    const raw = this.parseCookie(req, TX_COOKIE);
+    const raw = parseCookies(req)[TX_COOKIE];
     if (!raw) return undefined;
     const dot = raw.lastIndexOf('.');
     if (dot <= 0) return undefined;
@@ -249,24 +250,7 @@ export class OidcClient {
     const domain = authCookieDomain(hostHeader, this.cookieDomain);
     const domainAttr = domain ? `; Domain=${domain}` : '';
     const secureAttr = secure ? '; Secure' : '';
-    this.appendCookie(res, `${TX_COOKIE}=; HttpOnly; SameSite=Lax; Path=/${domainAttr}${secureAttr}; Max-Age=0`);
-  }
-
-  private appendCookie(res: http.ServerResponse, cookie: string): void {
-    const existing = res.getHeader('Set-Cookie');
-    const cookies = existing ? (Array.isArray(existing) ? existing : [String(existing)]) : [];
-    cookies.push(cookie);
-    res.setHeader('Set-Cookie', cookies);
-  }
-  private parseCookie(req: http.IncomingMessage, name: string): string | undefined {
-    const cookie = req.headers['cookie'];
-    if (!cookie) return undefined;
-    const m = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-    return m ? m[1] : undefined;
-  }
-
-  private isSecure(req: http.IncomingMessage): boolean {
-    return req.headers['x-forwarded-proto'] === 'https';
+    appendSetCookie(res, `${TX_COOKIE}=; HttpOnly; SameSite=Lax; Path=/${domainAttr}${secureAttr}; Max-Age=0`);
   }
 }
 

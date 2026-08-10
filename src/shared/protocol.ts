@@ -41,6 +41,21 @@ export function isControlMessage(obj: unknown): obj is ControlMessage {
   return typeof msg.type === 'string' && CONTROL_MESSAGE_TYPES.has(msg.type);
 }
 
+/**
+ * Parse a raw tunnel frame as a JSON control message.
+ * Returns null when the frame is not a valid control message (binary frame).
+ */
+export function tryParseControlMessage(raw: Buffer): ControlMessage | null {
+  const text = raw.toString('utf8');
+  if (!text.startsWith('{')) return null;
+  try {
+    const msg = JSON.parse(text);
+    return isControlMessage(msg) ? msg : null;
+  } catch {
+    return null;
+  }
+}
+
 const CONTROL_MESSAGE_TYPES = new Set([
   'register',
   'registered',
@@ -96,6 +111,16 @@ const HTTP_ID_MAX = CHANNEL_ID_MASK - 1;
 let _nextHttpId = 1;
 let _nextChannelId = CHANNEL_ID_MASK;
 
+/** True when requestId belongs to the browser WS channel namespace. */
+export function isChannelRequestId(requestId: number): boolean {
+  return (requestId & CHANNEL_ID_MASK) !== 0;
+}
+
+/** True when requestId belongs to the HTTP proxy request namespace. */
+export function isHttpRequestId(requestId: number): boolean {
+  return !isChannelRequestId(requestId);
+}
+
 export function nextHttpRequestId(): number {
   const id = _nextHttpId;
   _nextHttpId = _nextHttpId === HTTP_ID_MAX ? 1 : _nextHttpId + 1;
@@ -106,9 +131,4 @@ export function nextChannelId(): number {
   const id = _nextChannelId;
   _nextChannelId = _nextChannelId === 0xffff_ffff ? CHANNEL_ID_MASK : _nextChannelId + 1;
   return id;
-}
-
-/** @deprecated Use nextHttpRequestId() or nextChannelId(). */
-export function nextRequestId(): number {
-  return nextHttpRequestId();
 }

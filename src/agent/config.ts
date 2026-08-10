@@ -12,7 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { parse as parseYaml } from 'yaml';
 import { AgentConfig, AGENT_STATE_FILE, RECONNECT_BASE_DELAY_MS, RECONNECT_MAX_DELAY_MS, HEARTBEAT_INTERVAL_MS, DEFAULT_AGENT_MAX_SOCKETS } from '../shared/types';
-import { stripJsoncComments } from '../shared/state';
+import { stripJsoncComments, chmodIfPossible } from '../shared/state';
 import { createLogger, Logger } from '../shared/logger';
 import { substituteEnv } from '../shared/config';
 
@@ -109,21 +109,13 @@ export function saveAgentState(instanceId: string, token: string, dataDir?: stri
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  chmodIfPossible(dir, 0o700);
+  chmodIfPossible(dir, 0o700, log);
   const filePath = path.join(dir, AGENT_STATE_FILE);
   const tmp = filePath + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify({ instanceId, token }, null, 2) + '\n', 'utf8');
-  chmodIfPossible(tmp, 0o600);
+  chmodIfPossible(tmp, 0o600, log);
   fs.renameSync(tmp, filePath);
-  chmodIfPossible(filePath, 0o600);
-}
-
-function chmodIfPossible(targetPath: string, mode: number): void {
-  try {
-    fs.chmodSync(targetPath, mode);
-  } catch (err) {
-    log.warn('state_chmod', 'failed to set restrictive permissions', { path: targetPath, mode: mode.toString(8), error: String(err) });
-  }
+  chmodIfPossible(filePath, 0o600, log);
 }
 
 function findDefaultConfigPath(): string {

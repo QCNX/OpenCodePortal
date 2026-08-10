@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Router } from '../router';
 import { InstanceRegistry } from '../registry';
-import { MAX_PROXY_REQUEST_BODY_BYTES } from './request-forwarder';
+import { MAX_PROXY_REQUEST_BODY_BYTES } from '../../shared/types';
 import {
   BASE_DOMAIN,
   createHydratedRegistry,
@@ -74,7 +74,7 @@ describe('Subdomain routing', () => {
         close: () => {},
         send: () => {},
       } as any;
-      registry.register('vm-online', mockWs, 90_000, () => {});
+      registry.register('vm-online', mockWs, 90_000);
 
       const mockTunnel = {
         sendToAgent: (_id: string, _reqId: number, payload: Buffer) => {
@@ -112,7 +112,7 @@ describe('Subdomain routing', () => {
         close: () => {},
         send: () => {},
       } as any;
-      registry.register('vm-online', mockWs, 90_000, () => {});
+      registry.register('vm-online', mockWs, 90_000);
 
       const mockTunnel = {
         sendToAgent: (_id: string, _reqId: number, payload: Buffer) => {
@@ -149,7 +149,7 @@ describe('Subdomain routing', () => {
         close: () => {},
         send: () => {},
       } as any;
-      registry.register('vm-online', mockWs, 90_000, () => {});
+      registry.register('vm-online', mockWs, 90_000);
 
       const mockTunnel = {
         sendToAgent: (_id: string, _reqId: number, payload: Buffer) => {
@@ -187,7 +187,7 @@ describe('Subdomain routing', () => {
         close: () => {},
         send: () => {},
       } as any;
-      registry.register('vm-online', mockWs, 90_000, () => {});
+      registry.register('vm-online', mockWs, 90_000);
 
       const mockTunnel = {
         sendToAgent: () => true,
@@ -226,7 +226,7 @@ describe('Subdomain routing', () => {
         close: () => {},
         send: () => {},
       } as any;
-      registry.register('vm-online', mockWs, 90_000, () => {});
+      registry.register('vm-online', mockWs, 90_000);
 
       const mockTunnel = {
         sendToAgent: () => true,
@@ -260,7 +260,7 @@ describe('Subdomain routing', () => {
         close: () => {},
         send: () => {},
       } as any;
-      registry.register('vm-online', mockWs, 90_000, () => {});
+      registry.register('vm-online', mockWs, 90_000);
 
       const mockTunnel = {
         sendToAgent: () => {
@@ -324,7 +324,7 @@ describe('opencodePassword', () => {
       close: () => {},
       send: () => {},
     } as any;
-    registry.register('vm-online', mockWs, 90_000, () => {});
+    registry.register('vm-online', mockWs, 90_000);
     router.setTransport({
       sendToAgent: (_id: string, _reqId: number, payload: Buffer) => {
         captured = payload;
@@ -367,7 +367,7 @@ describe('opencodePassword', () => {
       close: () => {},
       send: () => {},
     } as any;
-    registry.register('vm-online', mockWs, 90_000, () => {});
+    registry.register('vm-online', mockWs, 90_000);
     router.setTransport({
       sendToAgent: (_id: string, _reqId: number, payload: Buffer) => {
         captured = payload;
@@ -413,7 +413,7 @@ describe('opencodePassword', () => {
       close: () => {},
       send: () => {},
     } as any;
-    registry.register('vm-online', mockWs, 90_000, () => {});
+    registry.register('vm-online', mockWs, 90_000);
     router.setTransport({
       sendToAgent: (_id: string, _reqId: number, payload: Buffer) => {
         captured = payload;

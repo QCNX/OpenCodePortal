@@ -2,7 +2,7 @@ import * as http from 'http';
 import * as crypto from 'crypto';
 import type { OidcClient } from './oidc-client';
 import { appendSetCookie, parseCookies } from '../http/cookies';
-import { authCookieDomain } from '../http/host-routing';
+import { authCookieDomain, hostWithoutPort } from '../http/host-routing';
 import { createLogger, Logger } from '../../shared/logger';
 
 const log: Logger = createLogger('gateway');
@@ -204,7 +204,7 @@ export class AuthGate {
       // Build the return-to URL so the login flow can send the user back.
       let returnTo: string;
       if (isSubdomain) {
-        const host = (req.headers.host || '').replace(/:.*$/, ''); // strip port
+        const host = hostWithoutPort(req.headers.host);
         returnTo = `//${host}${url}`;
       } else {
         returnTo = url;

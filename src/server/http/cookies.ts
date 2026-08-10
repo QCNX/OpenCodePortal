@@ -21,3 +21,8 @@ export function appendSetCookie(res: http.ServerResponse, cookie: string): void 
   cookies.push(cookie);
   res.setHeader('Set-Cookie', cookies);
 }
+
+/** True when the request arrived over HTTPS (X-Forwarded-Proto set by NPM). */
+export function isSecureRequest(req: http.IncomingMessage): boolean {
+  return req.headers['x-forwarded-proto'] === 'https';
+}

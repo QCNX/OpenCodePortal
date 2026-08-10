@@ -13,7 +13,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { IncomingMessage } from 'http';
 import { InstanceRegistry } from './registry';
 import { ControlMessage, RegisterMessage, ChannelOpenMessage, ChannelCloseMessage, ChannelOpenedMessage, ChannelErrorMessage, ChannelClosedMessage, HEARTBEAT_TIMEOUT_MS } from '../shared/types';
-import { isControlMessage, encodeFrame, decodeFrame } from '../shared/protocol';
+import { tryParseControlMessage, encodeFrame, decodeFrame } from '../shared/protocol';
 import { createLogger, Logger } from '../shared/logger';
 import type { AgentTransport } from './agent-transport';
 
@@ -41,6 +41,8 @@ export class TunnelServer implements AgentTransport {
     private heartbeatTimeoutMs: number = HEARTBEAT_TIMEOUT_MS,
   ) {
     this.gatewayId = gatewayId;
+    // Heartbeat timeouts are injected once; the registry owns the timers.
+    registry.setHeartbeatTimeoutHandler((id, ws) => this.handleHeartbeatTimeout(id, ws));
   }
 
   /** Create the WebSocket server (noServer mode — upgrades handled externally). */
@@ -56,22 +58,16 @@ export class TunnelServer implements AgentTransport {
       ws.on('message', (data: WebSocket.Data) => {
         const raw = Buffer.isBuffer(data) ? data : Buffer.from(data as string);
 
-        // Try to parse as JSON control message first
-        try {
-          const text = raw.toString('utf8');
-          if (text.startsWith('{')) {
-            const msg = JSON.parse(text);
-            if (isControlMessage(msg)) {
-              const newId = this.handleControl(ws, msg, instanceId);
-              if (newId) {
-                instanceId = newId;
-                registered = true;
-              }
-              return;
-            }
+        // Text frames carry JSON control messages; anything else is a binary
+        // frame (data forwarding from Agent → browser).
+        const control = tryParseControlMessage(raw);
+        if (control) {
+          const newId = this.handleControl(ws, control, instanceId);
+          if (newId) {
+            instanceId = newId;
+            registered = true;
           }
-        } catch {
-          // Not valid JSON or not a control message → treat as binary
+          return;
         }
 
         // Binary frame → data forwarding (response from Agent → browser)
@@ -171,9 +167,6 @@ export class TunnelServer implements AgentTransport {
           instanceId,
           ws,
           this.heartbeatTimeoutMs,
-          (id) => {
-            this.handleHeartbeatTimeout(id, ws);
-          },
         );
 
         if (!registered) {
@@ -216,9 +209,6 @@ export class TunnelServer implements AgentTransport {
           currentInstanceId,
           sessionCount,
           this.heartbeatTimeoutMs,
-          (id) => {
-            this.handleHeartbeatTimeout(id, ws);
-          },
           hb.opencodeVersion,
         );
         if (changed) {

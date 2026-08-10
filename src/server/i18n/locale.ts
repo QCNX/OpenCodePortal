@@ -1,5 +1,6 @@
 import * as http from 'http';
 import { parseCookies } from '../http/cookies';
+import { normalizeClientLocale } from '../../shared/locale';
 
 export const SUPPORTED_LOCALES = ['zh-CN', 'zh-TW', 'en'] as const;
 export type PortalLocale = typeof SUPPORTED_LOCALES[number];
@@ -21,15 +22,9 @@ function decodeLocale(value: string): string {
 
 export function parseLocale(value?: string | null): PortalLocale | null {
   if (!value) return null;
+  // 切割与 URL 解码保留在 i18n 层；匹配规则单源在 shared 的 normalizeClientLocale。
   const normalized = decodeLocale(value.split(';')[0].split(',')[0]);
-  if (normalized === 'zht' || normalized === 'zh-tw' || normalized === 'zh-hk' || normalized.startsWith('zh-hant')) {
-    return 'zh-TW';
-  }
-  if (normalized === 'zh' || normalized === 'zh-cn' || normalized === 'zh-sg' || normalized.startsWith('zh-hans')) {
-    return 'zh-CN';
-  }
-  if (normalized === 'en' || normalized.startsWith('en-')) return 'en';
-  return null;
+  return normalizeClientLocale(normalized);
 }
 
 export function normalizeLocale(value?: string | null): PortalLocale {

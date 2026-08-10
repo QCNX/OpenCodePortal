@@ -5,6 +5,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 import type * as Http from 'http';
+import { encodeWsTunnelPayload, nextChannelId } from '../shared/protocol';
 
 const { requestMock } = vi.hoisted(() => ({
   requestMock: vi.fn(),
@@ -20,10 +21,10 @@ vi.mock('http', async (importOriginal) => {
 
 import {
   Forwarder,
-  MAX_PROXY_RESPONSE_BODY_BYTES,
-  isEventStreamContentType,
   serializeResponseHeaders,
 } from './forwarder';
+import { isEventStreamContentType } from '../shared/http-headers';
+import { MAX_PROXY_RESPONSE_BODY_BYTES } from '../shared/types';
 
 function mockResponse(opts: {
   statusCode: number;
@@ -177,5 +178,27 @@ describe('Forwarder.handleRequest', () => {
     expect((response as any).destroy).toHaveBeenCalled();
     expect(tunnel.setSessionCount).toHaveBeenLastCalledWith(0);
     expect(sentFrames.some((frame) => frame.requestId === 8 && frame.payload.length === 0)).toBe(false);
+  });
+
+  it('discards channel-namespace frames with no active channel (no HTTP parse)', () => {
+    const channelId = nextChannelId();
+    expect(channelId).toBeGreaterThanOrEqual(0x80000000);
+
+    forwarder.handleRequest(channelId, Buffer.from('GET / HTTP/1.1\r\nHost: localhost\r\n\r\n'));
+
+    expect(requestMock).not.toHaveBeenCalled();
+    expect(sentFrames.length).toBe(0);
+  });
+
+  it('relays channel-namespace frames to the active channel', () => {
+    const channelId = nextChannelId();
+    const ws = { readyState: 1, send: vi.fn() }; // WebSocket.OPEN === 1
+    (forwarder as any).activeChannels.set(channelId, ws);
+
+    const payload = encodeWsTunnelPayload(Buffer.from('cursor-data'), true);
+    forwarder.handleRequest(channelId, payload);
+
+    expect(ws.send).toHaveBeenCalledWith(Buffer.from('cursor-data'), { binary: true });
+    expect(requestMock).not.toHaveBeenCalled();
   });
 });

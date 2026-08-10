@@ -1,7 +1,8 @@
 import * as http from 'http';
 import { createLogger, Logger } from '../../shared/logger';
 import { readRequestBodyOrRespond, MAX_LOGIN_BODY_BYTES } from '../http/body';
-import { detectPortalLocale } from '../webui/locale';
+import { isSecureRequest } from '../http/cookies';
+import { detectPortalLocale } from '../i18n';
 import { renderLoginPage } from '../webui/login-page';
 import { AuthGate } from './gate';
 import { sanitizeReturnTo } from './oidc-client';
@@ -70,7 +71,7 @@ export class BrowserAuthRoutes {
     }
 
     if (path === '/auth/logout') {
-      this.authGate.clearCookies(res, req.headers.host, this.isSecure(req));
+      this.authGate.clearCookies(res, req.headers.host, isSecureRequest(req));
       const oidcClient = this.authGate.getOidcClient();
       if (oidcClient) {
         oidcClient.logout(req, res);
@@ -128,7 +129,7 @@ export class BrowserAuthRoutes {
 
     if (this.authGate.verifySharedSecret(secret)) {
       this.loginFailures.delete(clientIp);
-      this.authGate.setAuthCookie(res, req.headers.host, this.isSecure(req));
+      this.authGate.setAuthCookie(res, req.headers.host, isSecureRequest(req));
       res.writeHead(302, { Location: returnTo });
       res.end();
       log.info('cookie_auth_set', 'login via form successful');
@@ -167,10 +168,6 @@ export class BrowserAuthRoutes {
       return;
     }
     entry.count += 1;
-  }
-
-  private isSecure(req: http.IncomingMessage): boolean {
-    return req.headers['x-forwarded-proto'] === 'https';
   }
 
   private getReturnParam(req: http.IncomingMessage): string | null {

@@ -9,6 +9,7 @@ data/
 .config/
 .playwright-mcp/
 test-results/
+tmp/
 opencode.jsonc
 config.yaml
 agent.config.yaml

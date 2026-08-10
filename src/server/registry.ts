@@ -5,8 +5,13 @@
 // Single source of truth for all instances (ADR 0001 decision 1).
 // Token verification lives here (ADR 0001 decision 4).
 // State is hydrated from persistence on startup and persisted on mutation.
+//
+// Domain data (RegistryEntry) is kept separate from live connection
+// bookkeeping (ConnectionState): connection state is never persisted and
+// exists only for the lifetime of an Agent tunnel.
 // ---------------------------------------------------------------------------
 
+import { randomBytes } from 'crypto';
 import { Instance, InstanceStatus, TokenVerifyResult, TOKEN_PREFIX } from '../shared/types';
 import type { StateStore } from '../shared/state';
 import { validateInstanceId, validateInstanceName } from '../shared/state';
@@ -31,12 +36,9 @@ function normalizeClearableForCreate(value: ClearableString): string | undefined
   return value || undefined;
 }
 
+/** Per-instance domain data (persisted). Holds no live connection state. */
 interface RegistryEntry {
   instance: Instance;
-  /** The WSS WebSocket for this Agent's tunnel connection */
-  ws: import('ws').WebSocket | null;
-  /** Timer for heartbeat timeout */
-  heartbeatTimer: ReturnType<typeof setTimeout> | null;
   /** Per-instance token (ocp-at-*) */
   assignedToken: string;
   /** Instance target for Agent forwarding */
@@ -49,13 +51,27 @@ interface RegistryEntry {
   agentIp?: string;
 }
 
+/** Live tunnel connection bookkeeping — separate from domain data. */
+interface ConnectionState {
+  /** The WSS WebSocket for this Agent's tunnel connection */
+  ws: import('ws').WebSocket | null;
+  /** Timer for heartbeat timeout */
+  heartbeatTimer: ReturnType<typeof setTimeout> | null;
+}
+
 export class InstanceRegistry {
   private entries = new Map<string, RegistryEntry>();
   private subdomainIndex = new Map<string, string>();
+  /** token → instanceId (kept in sync with create/hydrate/remove) */
+  private tokenIndex = new Map<string, string>();
+  /** Live connections keyed by instanceId — never persisted. */
+  private connections = new Map<string, ConnectionState>();
   private stateStore: StateStore;
 
   /** Callback for persisting state on mutation */
   private onPersist?: () => void;
+  /** Injected once (e.g. by TunnelServer); fired when a connection's heartbeat times out. */
+  private onHeartbeatTimeout?: (instanceId: string, ws: import('ws').WebSocket) => void;
 
   constructor() {
     // stateStore is set via hydrate() before any operations
@@ -72,6 +88,8 @@ export class InstanceRegistry {
 
     this.entries.clear();
     this.subdomainIndex.clear();
+    this.tokenIndex.clear();
+    this.connections.clear();
 
     for (const [id, inst] of Object.entries(state.instances)) {
       this.subdomainIndex.set(id, id);
@@ -85,8 +103,6 @@ export class InstanceRegistry {
           lastSeen: 0,
           connectedAt: 0,
         },
-        ws: null,
-        heartbeatTimer: null,
         assignedToken: inst.assignedToken,
         targetHost: inst.targetHost,
         targetPort: inst.targetPort,
@@ -94,6 +110,10 @@ export class InstanceRegistry {
         opencodePassword: inst.opencodePassword,
         agentIp: inst.agentIp,
       });
+      // First entry wins if persisted tokens collide (matches old linear-scan order)
+      if (!this.tokenIndex.has(inst.assignedToken)) {
+        this.tokenIndex.set(inst.assignedToken, id);
+      }
     }
 
     log.info('registry_hydrate', 'registry hydrated from state', {
@@ -108,16 +128,22 @@ export class InstanceRegistry {
     this.onPersist = cb;
   }
 
+  /**
+   * Inject the heartbeat-timeout handler once (replaces any previous).
+   * Called with the instanceId and the ws that owned the expired timer.
+   */
+  setHeartbeatTimeoutHandler(cb: (instanceId: string, ws: import('ws').WebSocket) => void): void {
+    this.onHeartbeatTimeout = cb;
+  }
+
   // -----------------------------------------------------------------------
   // Token verification (per-instance tokens only)
   // -----------------------------------------------------------------------
 
   verifyToken(token: string): TokenVerifyResult {
-    // Per-instance token (ocp-at-*) — must match an existing instance
-    for (const [id, entry] of this.entries) {
-      if (entry.assignedToken === token) {
-        return { valid: true, instanceId: id };
-      }
+    const instanceId = this.tokenIndex.get(token);
+    if (instanceId !== undefined && this.entries.has(instanceId)) {
+      return { valid: true, instanceId };
     }
 
     return { valid: false, reason: 'unknown_token' };
@@ -137,7 +163,7 @@ export class InstanceRegistry {
     if (this.entries.has(id)) return 'Instance ID already exists';
     if (this.subdomainIndex.has(id)) return 'Subdomain already mapped';
 
-    const token = this.stateStore.generateInstanceToken();
+    const token = this.generateInstanceToken();
 
     this.subdomainIndex.set(id, id);
     this.entries.set(id, {
@@ -150,14 +176,13 @@ export class InstanceRegistry {
         lastSeen: 0,
         connectedAt: 0,
       },
-      ws: null,
-      heartbeatTimer: null,
       assignedToken: token,
       targetHost: opts?.targetHost,
       targetPort: opts?.targetPort,
       opencodeUser: normalizeClearableForCreate(opts?.opencodeUser),
       opencodePassword: normalizeClearableForCreate(opts?.opencodePassword),
     });
+    this.tokenIndex.set(token, id);
 
     log.info('instance_created', 'instance created', { instanceId: id, name });
     this.onPersist?.();
@@ -199,15 +224,22 @@ export class InstanceRegistry {
     const entry = this.entries.get(id);
     if (!entry) return false;
 
+    const conn = this.connections.get(id);
     // Close agent connection with 4003 (Portainer Edge Agent pattern: stop reconnect, no exit)
-    if (entry.ws && entry.ws.readyState === entry.ws.OPEN) {
-      entry.ws.close(4003, 'instance deleted');
+    if (conn?.ws && conn.ws.readyState === conn.ws.OPEN) {
+      conn.ws.close(4003, 'instance deleted');
     }
-    if (entry.heartbeatTimer) {
-      clearTimeout(entry.heartbeatTimer);
-      entry.heartbeatTimer = null;
+    if (conn?.heartbeatTimer) {
+      clearTimeout(conn.heartbeatTimer);
     }
 
+    // Only drop the index entry if it still maps to the removed instance —
+    // with a hand-edited state.jsonc a duplicate token may index a different
+    // instance (hydrate is first-wins); deleting unconditionally would strand it.
+    if (this.tokenIndex.get(entry.assignedToken) === id) {
+      this.tokenIndex.delete(entry.assignedToken);
+    }
+    this.connections.delete(id);
     this.entries.delete(id);
     this.subdomainIndex.delete(id);
 
@@ -217,7 +249,7 @@ export class InstanceRegistry {
   }
 
   // -----------------------------------------------------------------------
-  // Registration (unchanged core logic)
+  // Registration
   // -----------------------------------------------------------------------
 
   /** Register an Agent's tunnel connection. Overwrites any existing connection. */
@@ -225,36 +257,41 @@ export class InstanceRegistry {
     instanceId: string,
     ws: import('ws').WebSocket,
     heartbeatTimeoutMs: number,
-    onTimeout: (id: string) => void,
   ): boolean {
     const entry = this.entries.get(instanceId);
     if (!entry) {
       return false; // unknown instance — caller must create first
     }
 
-    // Close old connection if exists
-    if (entry.ws && entry.ws !== ws && entry.ws.readyState === entry.ws.OPEN) {
-      entry.ws.close(1000, 'superseded by new connection');
+    let conn = this.connections.get(instanceId);
+    if (!conn) {
+      conn = { ws: null, heartbeatTimer: null };
+      this.connections.set(instanceId, conn);
     }
 
-    entry.ws = ws;
+    // Close old connection if exists
+    if (conn.ws && conn.ws !== ws && conn.ws.readyState === conn.ws.OPEN) {
+      conn.ws.close(1000, 'superseded by new connection');
+    }
+
+    conn.ws = ws;
     entry.instance.status = 'online';
     entry.instance.lastSeen = Date.now();
     entry.instance.connectedAt = Date.now();
 
     // Reset heartbeat timer
-    this.resetHeartbeat(entry, heartbeatTimeoutMs, onTimeout);
+    this.resetHeartbeat(entry, conn, heartbeatTimeoutMs);
 
     // Handle disconnect
     ws.on('close', () => {
-      if (entry.ws === ws) {
-        entry.ws = null;
+      if (conn.ws === ws) {
+        conn.ws = null;
         entry.instance.status = 'offline';
         entry.instance.connectedAt = 0;
         entry.instance.sessionCount = 0;
-        if (entry.heartbeatTimer) {
-          clearTimeout(entry.heartbeatTimer);
-          entry.heartbeatTimer = null;
+        if (conn.heartbeatTimer) {
+          clearTimeout(conn.heartbeatTimer);
+          conn.heartbeatTimer = null;
         }
         log.info('instance_disconnect', 'instance disconnected', { instanceId });
       }
@@ -268,17 +305,26 @@ export class InstanceRegistry {
     instanceId: string,
     sessionCount: number,
     timeoutMs: number,
-    onTimeout: (id: string) => void,
     opencodeVersion?: string,
   ): boolean {
     const entry = this.entries.get(instanceId);
     if (!entry) return false;
 
+    let conn = this.connections.get(instanceId);
+    if (!conn) {
+      // Defensive: in the tunnel flow register() always precedes heartbeat(),
+      // so conn.ws is non-null whenever the timeout timer arms. Keep the
+      // branch — a future caller must not "simplify" it into dropping the
+      // ws guard in resetHeartbeat.
+      conn = { ws: null, heartbeatTimer: null };
+      this.connections.set(instanceId, conn);
+    }
+
     let changed = entry.instance.sessionCount !== sessionCount;
     entry.instance.sessionCount = sessionCount;
     entry.instance.lastSeen = Date.now();
     entry.instance.status = 'online';
-    this.resetHeartbeat(entry, timeoutMs, onTimeout);
+    this.resetHeartbeat(entry, conn, timeoutMs);
 
     if (opencodeVersion !== undefined && entry.instance.opencodeVersion !== opencodeVersion) {
       entry.instance.opencodeVersion = opencodeVersion;
@@ -293,7 +339,7 @@ export class InstanceRegistry {
   // -----------------------------------------------------------------------
 
   getWs(instanceId: string): import('ws').WebSocket | null {
-    return this.entries.get(instanceId)?.ws ?? null;
+    return this.connections.get(instanceId)?.ws ?? null;
   }
 
   get(instanceId: string): Instance | undefined {
@@ -376,20 +422,27 @@ export class InstanceRegistry {
 
   // -- private ---------------------------------------------------------------
 
+  private generateInstanceToken(): string {
+    return TOKEN_PREFIX + randomBytes(16).toString('hex');
+  }
+
   private resetHeartbeat(
     entry: RegistryEntry,
+    conn: ConnectionState,
     timeoutMs: number,
-    onTimeout: (id: string) => void,
   ): void {
-    if (entry.heartbeatTimer) {
-      clearTimeout(entry.heartbeatTimer);
-      entry.heartbeatTimer = null;
+    if (conn.heartbeatTimer) {
+      clearTimeout(conn.heartbeatTimer);
+      conn.heartbeatTimer = null;
     }
-    entry.heartbeatTimer = setTimeout(() => {
+    const ws = conn.ws;
+    conn.heartbeatTimer = setTimeout(() => {
       entry.instance.status = 'offline';
       entry.instance.connectedAt = 0;
       log.warn('instance_timeout', 'instance heartbeat timeout', { instanceId: entry.instance.id });
-      onTimeout(entry.instance.id);
+      if (ws && this.onHeartbeatTimeout) {
+        this.onHeartbeatTimeout(entry.instance.id, ws);
+      }
     }, timeoutMs);
   }
 }

@@ -5,6 +5,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import * as http from 'http';
 import { SessionStore, OidcClient, sanitizeReturnTo } from './oidc-client';
+import { appendSetCookie } from '../http/cookies';
 
 function mockRes(): any {
   const self: any = {
@@ -78,7 +79,7 @@ describe('OidcClient cookie helpers', () => {
   it('scopes the session cookie to .<baseDomain> for cross-subdomain SSO', () => {
     const c = clientWithDomain('example.com');
     const res = mockRes();
-    c.appendCookie(res, c.sessionCookie('sid-123', 86_400_000));
+    appendSetCookie(res, c.sessionCookie('sid-123', 86_400_000));
     const cookie = setCookieFor(res, 'ocp_session');
     expect(cookie).toBeDefined();
     expect(cookie).toContain('Domain=.example.com');
@@ -172,7 +173,7 @@ describe('OidcClient cookie helpers', () => {
   it('session cookie includes Secure when requested', () => {
     const c = clientWithDomain('example.com');
     const res = mockRes();
-    c.appendCookie(res, c.sessionCookie('sid-123', 86_400_000, undefined, true));
+    appendSetCookie(res, c.sessionCookie('sid-123', 86_400_000, undefined, true));
     const cookie = setCookieFor(res, 'ocp_session');
     expect(cookie).toBeDefined();
     expect(cookie).toContain('Secure');
@@ -183,7 +184,7 @@ describe('OidcClient cookie helpers', () => {
   it('session cookie omits Secure when not requested', () => {
     const c = clientWithDomain('example.com');
     const res = mockRes();
-    c.appendCookie(res, c.sessionCookie('sid-123', 86_400_000));
+    appendSetCookie(res, c.sessionCookie('sid-123', 86_400_000));
     const cookie = setCookieFor(res, 'ocp_session');
     expect(cookie).toBeDefined();
     expect(cookie).not.toContain('Secure');

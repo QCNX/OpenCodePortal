@@ -164,7 +164,7 @@ Heartbeat message field `sessionCount` = Agent-side in-flight HTTP/SSE proxy con
 
 ### Implementation files
 
-- `src/shared/protocol.ts` — `encodeFrame`/`decodeFrame`/`isControlMessage`/`encodeWsTunnelPayload`/`decodeWsTunnelPayload`/`nextRequestId`
+- `src/shared/protocol.ts` — `encodeFrame`/`decodeFrame`/`isControlMessage`/`encodeWsTunnelPayload`/`decodeWsTunnelPayload`/`tryParseControlMessage`/`isChannelRequestId`/`isHttpRequestId`
 - `src/shared/types.ts` — control message interfaces, constants
 - `src/agent/forwarder.ts` — HTTP proxy, SSE streaming, `request_cancel`, body limits
 - `src/server/proxy/request-forwarder.ts` — Gateway-side request serialization

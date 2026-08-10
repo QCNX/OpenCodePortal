@@ -1,5 +1,6 @@
 import { safeJson } from '../webui/escape';
 import { getClientNavTranslations } from '../i18n';
+import { CLIENT_LOCALE_RULES } from '../../shared/locale';
 
 export interface PortalNavScriptInstance {
   id: string;
@@ -17,6 +18,7 @@ export interface PortalNavScriptModel {
 export function renderPortalNavScript(model: PortalNavScriptModel): string {
   const instancesJson = safeJson(model.instances);
   const translationsJson = safeJson(getClientNavTranslations());
+  const localeRulesJson = safeJson(CLIENT_LOCALE_RULES);
   return `(function(){
   var baseDomain=${safeJson(model.baseDomain)};
   var currentSub=${safeJson(model.currentSub)};
@@ -29,14 +31,20 @@ export function renderPortalNavScript(model: PortalNavScriptModel): string {
   var dropdownOpen=false;
   var hideSubTimer=null;
   var PACKS=${translationsJson};
+  var LOCALE_RULES=${localeRulesJson};
   function isV2(){
     return document.body.hasAttribute('data-new-layout');
   }
   function normalizeLocale(value){
+    // 匹配规则由 shared 的 CLIENT_LOCALE_RULES 序列化注入，与 server 版 parseLocale 同源
     var lang=(value||'').toLowerCase().replace(/_/g,'-');
-    if(lang==='zht'||lang==='zh-tw'||lang==='zh-hk'||lang.indexOf('zh-hant')===0)return 'zh-TW';
-    if(lang==='zh'||lang==='zh-cn'||lang==='zh-sg'||lang.indexOf('zh-hans')===0)return 'zh-CN';
-    if(lang==='en'||lang.indexOf('en-')===0)return 'en';
+    for(var i=0;i<LOCALE_RULES.length;i++){
+      var r=LOCALE_RULES[i];
+      if(r.exact.indexOf(lang)>=0)return r.locale;
+      for(var j=0;j<r.prefix.length;j++){
+        if(lang.indexOf(r.prefix[j])===0)return r.locale;
+      }
+    }
     return '';
   }
   function detectLocale(){

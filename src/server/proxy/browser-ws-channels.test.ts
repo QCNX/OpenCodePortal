@@ -88,8 +88,8 @@ describe('BrowserWsChannels WS upgrade (auth disabled)', () => {
     registry.update('vm-auth', { opencodeUser: 'admin', opencodePassword: 'upstream-pass' });
 
     const mockAgentWs = { readyState: 1, OPEN: 1, on: vi.fn(), close: vi.fn(), send: vi.fn() } as any;
-    registry.register('vm-auth', mockAgentWs, 90_000, vi.fn());
-    registry.register('vm-noauth', mockAgentWs, 90_000, vi.fn());
+    registry.register('vm-auth', mockAgentWs, 90_000);
+    registry.register('vm-noauth', mockAgentWs, 90_000);
 
     mockTunnel = {
       sendControlToAgent: vi.fn(),
@@ -214,7 +214,7 @@ describe('BrowserWsChannels WS upgrade (auth enabled)', () => {
       { id: 'vm-auth', name: 'Auth VM', tags: ['dev'] },
     ]);
     const mockAgentWs = { readyState: 1, OPEN: 1, on: vi.fn(), close: vi.fn(), send: vi.fn() } as any;
-    registry.register('vm-auth', mockAgentWs, 90_000, vi.fn());
+    registry.register('vm-auth', mockAgentWs, 90_000);
 
     const mockTunnel = { sendControlToAgent: vi.fn(), sendToAgent: vi.fn() };
     const channels = new BrowserWsChannels({

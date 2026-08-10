@@ -7,7 +7,9 @@ import {
   encodeFrame,
   decodeFrame,
   isControlMessage,
-  nextRequestId,
+  tryParseControlMessage,
+  isChannelRequestId,
+  isHttpRequestId,
   nextHttpRequestId,
   nextChannelId,
   encodeWsTunnelPayload,
@@ -194,30 +196,62 @@ describe('isControlMessage', () => {
 });
 
 // ---------------------------------------------------------------------------
-// nextRequestId
+// tryParseControlMessage
 // ---------------------------------------------------------------------------
 
-describe('nextRequestId', () => {
-  it('returns incrementing IDs starting from 1', () => {
-    // Note: _nextId is module-global and may have been incremented by prior
-    // tests. We test relative increment behavior.
-    const a = nextRequestId();
-    const b = nextRequestId();
-    const c = nextRequestId();
-    expect(b).toBe(a + 1);
-    expect(c).toBe(b + 1);
+describe('tryParseControlMessage', () => {
+  it('parses a valid control message frame', () => {
+    const msg = tryParseControlMessage(Buffer.from(JSON.stringify({ type: 'heartbeat', sessionCount: 2 })));
+    expect(msg).toEqual({ type: 'heartbeat', sessionCount: 2 });
   });
 
-  it('wraps around at uint32 max', () => {
-    // We can't easily test the wrap without resetting the module state,
-    // but we can verify the ID is always a uint32 (>= 0, <= 0xffffffff)
-    for (let i = 0; i < 100; i++) {
-      const id = nextRequestId();
-      expect(id).toBeGreaterThanOrEqual(0);
-      expect(id).toBeLessThanOrEqual(0xffff_ffff);
-    }
+  it('returns null for frames not starting with {', () => {
+    expect(tryParseControlMessage(Buffer.from('GET / HTTP/1.1\r\n\r\n'))).toBeNull();
+  });
+
+  it('returns null for malformed JSON', () => {
+    expect(tryParseControlMessage(Buffer.from('{"type": "heartbeat"'))).toBeNull();
+  });
+
+  it('returns null for JSON that is not a control message', () => {
+    expect(tryParseControlMessage(Buffer.from('{"foo": "bar"}'))).toBeNull();
+  });
+
+  it('returns null for binary frame data', () => {
+    const binary = encodeFrame(42, Buffer.from([0x00, 0x01, 0x02]));
+    expect(tryParseControlMessage(binary)).toBeNull();
+  });
+
+  it('returns null for an empty buffer', () => {
+    expect(tryParseControlMessage(Buffer.alloc(0))).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ID namespace predicates
+// ---------------------------------------------------------------------------
+
+describe('isChannelRequestId / isHttpRequestId', () => {
+  it('classifies allocated IDs into their own namespaces', () => {
+    const httpId = nextHttpRequestId();
+    const channelId = nextChannelId();
+    expect(isHttpRequestId(httpId)).toBe(true);
+    expect(isChannelRequestId(httpId)).toBe(false);
+    expect(isChannelRequestId(channelId)).toBe(true);
+    expect(isHttpRequestId(channelId)).toBe(false);
+  });
+
+  it('treats the high bit as the channel discriminator', () => {
+    expect(isChannelRequestId(0x8000_0000)).toBe(true);
+    expect(isChannelRequestId(0xffff_ffff)).toBe(true);
+    expect(isChannelRequestId(0x7fff_ffff)).toBe(false);
+    expect(isChannelRequestId(0)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tunnel ID namespaces
+// ---------------------------------------------------------------------------
 
 describe('tunnel ID namespaces', () => {
   it('allocates HTTP requests below the channel namespace and channels within it', () => {

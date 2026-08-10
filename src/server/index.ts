@@ -16,7 +16,10 @@ import { loadConfig } from './config';
 import { InstanceRegistry } from './registry';
 import { TunnelServer } from './tunnel';
 import { Router } from './router';
+import { toInstanceView } from './api/instance-view';
+import { DashboardEventBus } from './webui/dashboard-event-bus';
 import { OidcClient } from './auth/oidc-client';
+import { OidcBootstrap } from './auth/oidc-bootstrap';
 import { JsoncStateStore } from '../shared/state';
 import type { PersistenceState } from '../shared/types';
 import { createLogger, Logger } from '../shared/logger';
@@ -84,14 +87,25 @@ log.info('config_load', 'starting gateway', {
 const registry = new InstanceRegistry();
 registry.hydrate(store);
 
-// Wire auto-persistence on mutation
-registry.setPersistCallback(() => {
-  const persistState: PersistenceState = {
+// Snapshot of the full mutable state for persistence (ADR 0001 decision 2)
+function buildPersistState(): PersistenceState {
+  return {
     gatewayId,
     cookieSecret,
     instances: registry.toPersistState(),
   };
-  store.save(persistState);
+}
+
+// Wire auto-persistence on mutation
+registry.setPersistCallback(() => {
+  store.save(buildPersistState());
+});
+
+// Dashboard SSE bus: owns the /events fan-out (immediate snapshot + 2s
+// refresh). The snapshot is re-derived from the registry on every push —
+// the bus never caches instance state.
+const dashboardBus = new DashboardEventBus({
+  listInstances: () => registry.list().map(i => toInstanceView(registry, i)),
 });
 
 // Create router
@@ -103,14 +117,11 @@ const router = new Router(
   cookieSecret,
   config.gateway.agentImage,
 );
+router.setDashboardBus(dashboardBus);
 
 // Initialize OIDC if configured
-let oidcClient: OidcClient | null = null;
 if (config.gateway.oidc) {
-  const OIDC_INIT_TIMEOUT_MS = 5 * 60 * 1000;
-  const initStart = Date.now();
   const client = new OidcClient();
-  oidcClient = client;
   const oidcCfg = config.gateway.oidc;
   const baseUrl = oidcCfg.redirectUri.replace(/\/auth\/callback$/, '');
   // Enable the OIDC gate before discovery so an unavailable IdP never opens
@@ -118,30 +129,26 @@ if (config.gateway.oidc) {
   // closed while health checks remain public.
   router.setOidcClient(client);
 
-  const initOidc = (attempt: number): void => {
-    // Already succeeded — nothing to do
-    if (client.isConfigured()) return;
-
-    const elapsed = Date.now() - initStart;
-    if (elapsed > OIDC_INIT_TIMEOUT_MS) {
-      log.error('config_load', 'oidc init timed out — gateway remains fail-closed', { elapsedMs: elapsed });
-      return;
-    }
-
-    client.init(oidcCfg, baseUrl, config.gateway.baseDomain)
-      .then(() => {
-        log.info('config_load', 'oidc ready — authentication enabled');
-      })
-      .catch((err) => {
-        const delayMs = Math.min(60_000, 2_000 * 2 ** Math.min(attempt, 5));
-        log.error('config_load', 'oidc init failed — will retry', {
-          error: err.message, attempt, retryInMs: delayMs,
-        });
-        log.warn('config_load', 'oidc init failed — gateway remains fail-closed until retry succeeds');
-        setTimeout(() => initOidc(attempt + 1), delayMs).unref();
+  new OidcBootstrap({
+    client,
+    oidcCfg,
+    baseUrl,
+    baseDomain: config.gateway.baseDomain,
+    // Do not keep the process alive solely for OIDC init retries.
+    schedule: (fn, ms) => setTimeout(fn, ms).unref(),
+    onReady: () => {
+      log.info('config_load', 'oidc ready — authentication enabled');
+    },
+    onError: (err, attempt, retryInMs) => {
+      log.error('config_load', 'oidc init failed — will retry', {
+        error: err.message, attempt, retryInMs,
       });
-  };
-  initOidc(0);
+      log.warn('config_load', 'oidc init failed — gateway remains fail-closed until retry succeeds');
+    },
+    onGiveUp: (elapsedMs) => {
+      log.error('config_load', 'oidc init timed out — gateway remains fail-closed', { elapsedMs });
+    },
+  }).start();
 }
 
 // Create tunnel server (no longer needs GatewayConfig)
@@ -155,10 +162,10 @@ const tunnel = new TunnelServer(registry, {
   onAgentDisconnect(instanceId) {
     router.cleanupInstanceChannels(instanceId);
     router.cleanupInstanceRequests(instanceId);
-    router.broadcastDashboardUpdate();
+    dashboardBus.publish();
   },
   onInstanceMetricsUpdate() {
-    router.broadcastDashboardUpdate();
+    dashboardBus.publish();
   },
 }, gatewayId);
 
@@ -203,12 +210,7 @@ async function shutdown() {
     }
   }
   // Final state save
-  const persistState: PersistenceState = {
-    gatewayId,
-    cookieSecret,
-    instances: registry.toPersistState(),
-  };
-  store.save(persistState);
+  store.save(buildPersistState());
 
   server.close(() => {
     log.info('server_shutdown', 'shutdown complete');

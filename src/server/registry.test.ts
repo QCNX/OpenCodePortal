@@ -29,6 +29,7 @@ function createMockWs(): any {
 describe('InstanceRegistry', () => {
   let registry: InstanceRegistry;
   let store: MemoryStateStore;
+  let onTimeout: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     registry = new InstanceRegistry();
@@ -37,6 +38,8 @@ describe('InstanceRegistry', () => {
       instances: {},
     });
     registry.hydrate(store);
+    onTimeout = vi.fn();
+    registry.setHeartbeatTimeoutHandler(onTimeout as (instanceId: string, ws: import('ws').WebSocket) => void);
   });
 
   afterEach(() => {
@@ -186,7 +189,7 @@ describe('InstanceRegistry', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
 
-      const result = registry.register('vm-1', ws, 90_000, vi.fn());
+      const result = registry.register('vm-1', ws, 90_000);
       expect(result).toBe(true);
 
       const inst = registry.get('vm-1')!;
@@ -196,7 +199,7 @@ describe('InstanceRegistry', () => {
 
     it('returns false for unknown instance id', () => {
       const ws = createMockWs();
-      const result = registry.register('nope', ws, 90_000, vi.fn());
+      const result = registry.register('nope', ws, 90_000);
       expect(result).toBe(false);
     });
 
@@ -204,7 +207,7 @@ describe('InstanceRegistry', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
 
-      registry.register('vm-1', ws, 90_000, vi.fn());
+      registry.register('vm-1', ws, 90_000);
       expect(registry.get('vm-1')!.status).toBe('online');
 
       // Simulate WebSocket close
@@ -218,8 +221,8 @@ describe('InstanceRegistry', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
 
-      registry.register('vm-1', ws, 90_000, vi.fn());
-      registry.heartbeat('vm-1', 5, 90_000, vi.fn());
+      registry.register('vm-1', ws, 90_000);
+      registry.heartbeat('vm-1', 5, 90_000);
       expect(registry.get('vm-1')!.sessionCount).toBe(5);
 
       ws._triggerClose(1000, 'normal');
@@ -230,10 +233,9 @@ describe('InstanceRegistry', () => {
     it('clears heartbeat timer on disconnect', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
-      const onTimeout = vi.fn();
 
       vi.useFakeTimers();
-      registry.register('vm-1', ws, 90_000, onTimeout);
+      registry.register('vm-1', ws, 90_000);
 
       // Disconnect before timeout fires
       ws._triggerClose(1000, 'normal');
@@ -250,7 +252,7 @@ describe('InstanceRegistry', () => {
     it('returns ws after registration', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
-      registry.register('vm-1', ws, 90_000, vi.fn());
+      registry.register('vm-1', ws, 90_000);
       expect(registry.getWs('vm-1')).toBe(ws);
     });
 
@@ -270,10 +272,10 @@ describe('InstanceRegistry', () => {
     it('updates sessionCount and lastSeen', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
-      registry.register('vm-1', ws, 90_000, vi.fn());
+      registry.register('vm-1', ws, 90_000);
 
       const before = registry.get('vm-1')!.lastSeen;
-      expect(registry.heartbeat('vm-1', 5, 90_000, vi.fn())).toBe(true);
+      expect(registry.heartbeat('vm-1', 5, 90_000)).toBe(true);
 
       const inst = registry.get('vm-1')!;
       expect(inst.sessionCount).toBe(5);
@@ -283,23 +285,22 @@ describe('InstanceRegistry', () => {
     it('returns false when sessionCount is unchanged', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
-      registry.register('vm-1', ws, 90_000, vi.fn());
+      registry.register('vm-1', ws, 90_000);
 
-      expect(registry.heartbeat('vm-1', 3, 90_000, vi.fn())).toBe(true);
-      expect(registry.heartbeat('vm-1', 3, 90_000, vi.fn())).toBe(false);
+      expect(registry.heartbeat('vm-1', 3, 90_000)).toBe(true);
+      expect(registry.heartbeat('vm-1', 3, 90_000)).toBe(false);
     });
 
     it('keeps instance online (resets timeout)', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
-      const onTimeout = vi.fn();
 
       vi.useFakeTimers();
-      registry.register('vm-1', ws, 90_000, onTimeout);
+      registry.register('vm-1', ws, 90_000);
 
       // Advance to just before timeout, send heartbeat
       vi.advanceTimersByTime(80_000);
-      registry.heartbeat('vm-1', 3, 90_000, onTimeout);
+      registry.heartbeat('vm-1', 3, 90_000);
 
       // The timeout should have been reset — advance past original deadline
       vi.advanceTimersByTime(20_000); // now at 100s total, 10s past original
@@ -313,25 +314,24 @@ describe('InstanceRegistry', () => {
     });
 
     it('is a no-op for unknown instance', () => {
-      const onTimeout = vi.fn();
       // Should not throw
-      registry.heartbeat('unknown', 0, 90_000, onTimeout);
+      registry.heartbeat('unknown', 0, 90_000);
       expect(onTimeout).not.toHaveBeenCalled();
     });
 
     it('marks instance online even if previously offline', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
-      registry.register('vm-1', ws, 90_000, vi.fn());
+      registry.register('vm-1', ws, 90_000);
 
       // Timeout → offline
       vi.useFakeTimers();
-      registry.heartbeat('vm-1', 1, 1, vi.fn()); // short timeout
+      registry.heartbeat('vm-1', 1, 1); // short timeout
       vi.advanceTimersByTime(10);
       expect(registry.get('vm-1')!.status).toBe('offline');
 
       // New heartbeat should mark online again
-      registry.heartbeat('vm-1', 2, 90_000, vi.fn());
+      registry.heartbeat('vm-1', 2, 90_000);
       expect(registry.get('vm-1')!.status).toBe('online');
     });
   });
@@ -342,30 +342,28 @@ describe('InstanceRegistry', () => {
     it('fires onTimeout after timeout period without heartbeat', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
-      const onTimeout = vi.fn();
 
       vi.useFakeTimers();
-      registry.register('vm-1', ws, 1_000, onTimeout);
+      registry.register('vm-1', ws, 1_000);
 
       expect(registry.get('vm-1')!.status).toBe('online');
 
       vi.advanceTimersByTime(1_100);
-      expect(onTimeout).toHaveBeenCalledWith('vm-1');
+      expect(onTimeout).toHaveBeenCalledWith('vm-1', ws);
       expect(registry.get('vm-1')!.status).toBe('offline');
     });
 
     it('resets timer on each heartbeat call', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
-      const onTimeout = vi.fn();
 
       vi.useFakeTimers();
-      registry.register('vm-1', ws, 10_000, onTimeout);
+      registry.register('vm-1', ws, 10_000);
 
       // Send heartbeat every 5s for 30s
       for (let i = 0; i < 6; i++) {
         vi.advanceTimersByTime(5_000);
-        registry.heartbeat('vm-1', i, 10_000, onTimeout);
+        registry.heartbeat('vm-1', i, 10_000);
       }
 
       expect(onTimeout).not.toHaveBeenCalled();
@@ -380,10 +378,9 @@ describe('InstanceRegistry', () => {
     it('onTimeout is called only once even if timer advances far past deadline', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
-      const onTimeout = vi.fn();
 
       vi.useFakeTimers();
-      registry.register('vm-1', ws, 1_000, onTimeout);
+      registry.register('vm-1', ws, 1_000);
 
       vi.advanceTimersByTime(100_000);
       expect(onTimeout).toHaveBeenCalledTimes(1);
@@ -398,8 +395,8 @@ describe('InstanceRegistry', () => {
       const oldWs = createMockWs();
       const newWs = createMockWs();
 
-      registry.register('vm-1', oldWs, 90_000, vi.fn());
-      registry.register('vm-1', newWs, 90_000, vi.fn());
+      registry.register('vm-1', oldWs, 90_000);
+      registry.register('vm-1', newWs, 90_000);
 
       expect(registry.getWs('vm-1')).toBe(newWs);
 
@@ -414,11 +411,27 @@ describe('InstanceRegistry', () => {
       const oldWs = createMockWs();
       const newWs = createMockWs();
 
-      registry.register('vm-1', oldWs, 90_000, vi.fn());
-      registry.register('vm-1', newWs, 90_000, vi.fn());
+      registry.register('vm-1', oldWs, 90_000);
+      registry.register('vm-1', newWs, 90_000);
 
       newWs._triggerClose(1000, 'new gone');
       expect(registry.get('vm-1')!.status).toBe('offline');
+    });
+
+    it('superseding clears the old connection heartbeat timer', () => {
+      registry.create('vm-1', 'VM', []);
+      const oldWs = createMockWs();
+      const newWs = createMockWs();
+
+      vi.useFakeTimers();
+      registry.register('vm-1', oldWs, 1_000);
+      registry.register('vm-1', newWs, 90_000);
+
+      // Old connection's deadline passes — its timer must have been cleared
+      vi.advanceTimersByTime(10_000);
+      expect(onTimeout).not.toHaveBeenCalled();
+      expect(registry.get('vm-1')!.status).toBe('online');
+      expect(registry.getWs('vm-1')).toBe(newWs);
     });
   });
 
@@ -478,6 +491,50 @@ describe('InstanceRegistry', () => {
 
     it('returns invalid for empty token', () => {
       const result = registry.verifyToken('');
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe('unknown_token');
+    });
+
+    it('resolves tokens hydrated from persisted state', () => {
+      const store2 = new MemoryStateStore({
+        instances: {
+          'vm-1': { name: 'VM One', tags: [], assignedToken: 'ocp-at-hydrated-1' },
+          'vm-2': { name: 'VM Two', tags: [], assignedToken: 'ocp-at-hydrated-2' },
+        },
+      });
+      const reg2 = new InstanceRegistry();
+      reg2.hydrate(store2);
+
+      const r1 = reg2.verifyToken('ocp-at-hydrated-1');
+      expect(r1.valid).toBe(true);
+      expect(r1.instanceId).toBe('vm-1');
+      const r2 = reg2.verifyToken('ocp-at-hydrated-2');
+      expect(r2.valid).toBe(true);
+      expect(r2.instanceId).toBe('vm-2');
+    });
+
+    it('first instance wins when hydrated tokens collide', () => {
+      const store2 = new MemoryStateStore({
+        instances: {
+          'vm-1': { name: 'VM One', tags: [], assignedToken: 'ocp-at-dup' },
+          'vm-2': { name: 'VM Two', tags: [], assignedToken: 'ocp-at-dup' },
+        },
+      });
+      const reg2 = new InstanceRegistry();
+      reg2.hydrate(store2);
+
+      const result = reg2.verifyToken('ocp-at-dup');
+      expect(result.valid).toBe(true);
+      expect(result.instanceId).toBe('vm-1');
+    });
+
+    it('rejects the token after the instance is removed', () => {
+      registry.create('vm-1', 'VM One', []);
+      const token = registry.getAssignedToken('vm-1')!;
+      expect(registry.verifyToken(token).valid).toBe(true);
+
+      registry.remove('vm-1');
+      const result = registry.verifyToken(token);
       expect(result.valid).toBe(false);
       expect(result.reason).toBe('unknown_token');
     });
@@ -584,9 +641,9 @@ describe('InstanceRegistry', () => {
     it('stores opencodeVersion from heartbeat', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
-      registry.register('vm-1', ws, 90_000, vi.fn());
+      registry.register('vm-1', ws, 90_000);
 
-      registry.heartbeat('vm-1', 3, 90_000, vi.fn(), '1.18.0');
+      registry.heartbeat('vm-1', 3, 90_000, '1.18.0');
 
       expect(registry.get('vm-1')?.opencodeVersion).toBe('1.18.0');
     });
@@ -594,30 +651,30 @@ describe('InstanceRegistry', () => {
     it('does not overwrite opencodeVersion when not provided in heartbeat', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
-      registry.register('vm-1', ws, 90_000, vi.fn());
+      registry.register('vm-1', ws, 90_000);
 
       // Set version via heartbeat
-      registry.heartbeat('vm-1', 3, 90_000, vi.fn(), '1.18.0');
+      registry.heartbeat('vm-1', 3, 90_000, '1.18.0');
       expect(registry.get('vm-1')?.opencodeVersion).toBe('1.18.0');
 
       // Subsequent heartbeat without version should keep the existing one
-      registry.heartbeat('vm-1', 5, 90_000, vi.fn());
+      registry.heartbeat('vm-1', 5, 90_000);
       expect(registry.get('vm-1')?.opencodeVersion).toBe('1.18.0');
     });
 
     it('returns true when opencodeVersion changes', () => {
       registry.create('vm-1', 'VM', []);
       const ws = createMockWs();
-      registry.register('vm-1', ws, 90_000, vi.fn());
+      registry.register('vm-1', ws, 90_000);
 
       // First set with sessionCount change → true
-      expect(registry.heartbeat('vm-1', 3, 90_000, vi.fn(), '1.18.0')).toBe(true);
+      expect(registry.heartbeat('vm-1', 3, 90_000, '1.18.0')).toBe(true);
 
       // Same values → false
-      expect(registry.heartbeat('vm-1', 3, 90_000, vi.fn(), '1.18.0')).toBe(false);
+      expect(registry.heartbeat('vm-1', 3, 90_000, '1.18.0')).toBe(false);
 
       // New version → true
-      expect(registry.heartbeat('vm-1', 3, 90_000, vi.fn(), '1.19.0')).toBe(true);
+      expect(registry.heartbeat('vm-1', 3, 90_000, '1.19.0')).toBe(true);
     });
   });
 
@@ -631,8 +688,76 @@ describe('InstanceRegistry', () => {
       expect(token).toMatch(/^ocp-at-/);
     });
 
+    it('generates tokens in ocp-at- + 32 hex chars format', () => {
+      registry.create('vm-1', 'VM One', []);
+      const token = registry.getAssignedToken('vm-1')!;
+      expect(token).toMatch(/^ocp-at-[0-9a-f]{32}$/);
+    });
+
+    it('generates unique tokens for each instance', () => {
+      registry.create('vm-1', 'VM One', []);
+      registry.create('vm-2', 'VM Two', []);
+      expect(registry.getAssignedToken('vm-1')).not.toBe(registry.getAssignedToken('vm-2'));
+    });
+
     it('getAssignedToken returns undefined for unknown instance', () => {
       expect(registry.getAssignedToken('nope')).toBeUndefined();
+    });
+  });
+
+  // -- heartbeat timeout handler injection ------------------------------------
+
+  describe('setHeartbeatTimeoutHandler', () => {
+    it('calls the injected handler with the owning ws when a heartbeat expires', () => {
+      registry.create('vm-1', 'VM', []);
+      const ws = createMockWs();
+
+      vi.useFakeTimers();
+      registry.register('vm-1', ws, 1_000);
+      vi.advanceTimersByTime(1_100);
+
+      expect(onTimeout).toHaveBeenCalledTimes(1);
+      expect(onTimeout).toHaveBeenCalledWith('vm-1', ws);
+    });
+
+    it('replaces a previously injected handler (single handler slot)', () => {
+      registry.create('vm-1', 'VM', []);
+      const first = vi.fn();
+      const second = vi.fn();
+      registry.setHeartbeatTimeoutHandler(first);
+      registry.setHeartbeatTimeoutHandler(second);
+
+      vi.useFakeTimers();
+      registry.register('vm-1', createMockWs(), 1_000);
+      vi.advanceTimersByTime(1_100);
+
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not invoke a stale timer for a superseded connection', () => {
+      registry.create('vm-1', 'VM', []);
+      const oldWs = createMockWs();
+      const newWs = createMockWs();
+
+      vi.useFakeTimers();
+      registry.register('vm-1', oldWs, 1_000);
+      registry.register('vm-1', newWs, 90_000);
+      vi.advanceTimersByTime(10_000);
+
+      expect(onTimeout).not.toHaveBeenCalled();
+      expect(registry.get('vm-1')!.status).toBe('online');
+    });
+
+    it('is a no-op when no handler is injected', () => {
+      const reg2 = new InstanceRegistry();
+      reg2.hydrate(new MemoryStateStore());
+
+      vi.useFakeTimers();
+      reg2.create('vm-2', 'VM Two', []);
+      reg2.register('vm-2', createMockWs(), 1_000);
+      vi.advanceTimersByTime(1_100);
+      expect(reg2.get('vm-2')!.status).toBe('offline');
     });
   });
 });

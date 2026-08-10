@@ -7,11 +7,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { randomBytes } from 'crypto';
 import {
   PersistenceState,
   PersistenceInstance,
-  TOKEN_PREFIX,
   PERSISTENT_STATE_FILE,
 } from './types';
 import { createLogger, Logger } from './logger';
@@ -27,8 +25,6 @@ export interface StateStore {
   load(): PersistenceState;
   /** Persist entire state atomically */
   save(state: PersistenceState): void;
-  /** Generate a new per-instance token (ocp-at-*) */
-  generateInstanceToken(): string;
   /** Get the data directory path (for tests) */
   getDataDir(): string;
 }
@@ -73,20 +69,16 @@ export class JsoncStateStore implements StateStore {
     chmodIfPossible(filePath, 0o600);
   }
 
-  generateInstanceToken(): string {
-    return TOKEN_PREFIX + randomBytes(16).toString('hex');
-  }
-
   getDataDir(): string {
     return this.dataDir;
   }
 }
 
-function chmodIfPossible(targetPath: string, mode: number): void {
+export function chmodIfPossible(targetPath: string, mode: number, logger: Logger = log): void {
   try {
     fs.chmodSync(targetPath, mode);
   } catch (err) {
-    log.warn('state_chmod', 'failed to set restrictive permissions', { path: targetPath, mode: mode.toString(8), error: String(err) });
+    logger.warn('state_chmod', 'failed to set restrictive permissions', { path: targetPath, mode: mode.toString(8), error: String(err) });
   }
 }
 
@@ -96,7 +88,6 @@ function chmodIfPossible(targetPath: string, mode: number): void {
 
 export class MemoryStateStore implements StateStore {
   private state: PersistenceState;
-  private counter = 0;
 
   constructor(initial?: Partial<PersistenceState>) {
     this.state = {
@@ -112,10 +103,6 @@ export class MemoryStateStore implements StateStore {
 
   save(state: PersistenceState): void {
     this.state = JSON.parse(JSON.stringify(state));
-  }
-
-  generateInstanceToken(): string {
-    return TOKEN_PREFIX + 'test-' + (++this.counter).toString(16).padStart(4, '0');
   }
 
   getDataDir(): string {
