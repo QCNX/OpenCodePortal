@@ -21,7 +21,7 @@ The injection boundary was originally checked against the official `anomalyco/op
 
 | Element | Legacy | V2 |
 |---------|--------|-----|
-| Mount point | `#opencode-titlebar-left` | `#opencode-titlebar-right` |
+| Mount point | `#opencode-titlebar-right`（与 V2 同一容器，位于原生按钮左侧） | `#opencode-titlebar-right` |
 | Button | `data-component="button"` / `secondary` / `small` | `data-component="button-v2"` / `ghost-muted` / `large` |
 | Dropdown | `data-component="dropdown-menu-content"` | `data-component="menu-v2-content"` |
 | Menu items | `data-slot="dropdown-menu-item"` | `data-component="menu-v2-item"` |

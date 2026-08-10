@@ -58,8 +58,8 @@ export function renderPortalNavScript(model: PortalNavScriptModel): string {
   function doLogout(){
     window.location.assign('//'+baseDomain+'/auth/logout');
   }
-  function findVisibleTitlebarLeft(){
-    var nodes=document.querySelectorAll('#opencode-titlebar-left');
+  function findVisibleTitlebarRight(){
+    var nodes=document.querySelectorAll('#opencode-titlebar-right');
     var visible=null;
     for(var i=0;i<nodes.length;i++){
       var r=nodes[i].getBoundingClientRect();
@@ -73,7 +73,7 @@ export function renderPortalNavScript(model: PortalNavScriptModel): string {
   }
   function findMountPoint(){
     if(isV2())return findV2Mount();
-    return findVisibleTitlebarLeft();
+    return findVisibleTitlebarRight();
   }
   function cancelHideSub(){
     if(hideSubTimer){clearTimeout(hideSubTimer);hideSubTimer=null;}
@@ -288,7 +288,7 @@ export function renderPortalNavScript(model: PortalNavScriptModel): string {
   function createNav(){
     var nav=document.createElement('div');
     nav.id='_ocp_nav';
-    nav.style.cssText='display:flex;align-items:center;flex-shrink:0;margin-right:4px;';
+    nav.style.cssText='display:flex;align-items:center;flex-shrink:0;margin-left:4px;';
     nav.onclick=function(e){e.stopPropagation();};
     portalBtn=document.createElement('button');
     portalBtn.type='button';

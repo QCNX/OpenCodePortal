@@ -235,14 +235,14 @@ test('ws-terminal: browser WebSocket echo via evaluate', async ({ page }) => {
 test('nav-bar: injected into proxied HTML page', async ({ page }) => {
   await gotoInstance(page, '/html');
 
-  const titlebar = page.locator('#opencode-titlebar-left');
+  const titlebar = page.locator('#opencode-titlebar-right');
   await expect(titlebar).toBeVisible();
   const nav = titlebar.locator('#_ocp_nav');
   await expect(nav).toBeVisible();
 
   const isFirstChild = await page.evaluate(() => {
     const navEl = document.getElementById('_ocp_nav');
-    const tb = document.getElementById('opencode-titlebar-left');
+    const tb = document.getElementById('opencode-titlebar-right');
     return !!(navEl && tb && tb.firstElementChild === navEl);
   });
   expect(isFirstChild).toBe(true);

@@ -27,7 +27,7 @@ const HTML_PAGE = [
   '<div class="flex items-center min-w-0 pr-2">',
   '<div id="opencode-titlebar-left" class="flex items-center gap-1 shrink-0 min-w-[24px] min-h-[24px]"></div>',
   '<div class="flex-1"></div>',
-  '<div id="opencode-titlebar-right" class="flex items-center gap-1 shrink-0 justify-end min-w-[24px] min-h-[24px]"></div>',
+  '<div id="opencode-titlebar-right" class="flex items-center gap-1 shrink-0 justify-end min-w-[24px] min-h-[24px]"><button>Status</button><button>Review</button></div>',
   '</div>',
   '</body></html>',
 ].join('');

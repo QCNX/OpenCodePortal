@@ -42,7 +42,7 @@ Gateway 在代理 OpenCode HTML 时注入顶栏 **OC Portal** 下拉菜单：
 
 | 机制 | 说明 |
 |------|------|
-| `injectNavBar()` | 在 OpenCode 标题栏最左侧挂载 Portal 按钮，下拉菜单复用 OpenCode 主题 |
+| `injectNavBar()` | 在 OpenCode 标题栏右侧挂载 Portal 按钮（OC Portal 位于原生按钮左侧），下拉菜单复用 OpenCode 主题 |
 | `patchCspForScript()` | 将注入脚本的 sha256 加入 CSP 响应头白名单（修补 script-src 与 script-src-elem） |
 | `patchCspInHtml()` | 修补 HTML 内 `<meta>` CSP 标签 |
 | `overrideCacheHeaders()` | 代理响应设 `Cache-Control: no-cache`（保留 ETag 供 304） |

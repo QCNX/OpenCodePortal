@@ -85,12 +85,12 @@ The injected script would be rejected by the browser unless its sha256 appears i
 Injected script content:
 
 ```
-1. Define helper functions (findVisibleTitlebarLeft, closeAll, goDashboard, etc.)
+1. Define helper functions (findVisibleTitlebarRight, closeAll, goDashboard, etc.)
 2. scheduleTryMount() → requestAnimationFrame(fn)
-   → findVisibleTitlebarLeft() iterates all #opencode-titlebar-left nodes
+   → findVisibleTitlebarRight() iterates all #opencode-titlebar-right nodes
       takes the first one with getBoundingClientRect().width > 0 (visible)
    → createNav() builds #_ocp_nav (contains #_ocp_portal button)
-   → host.insertBefore(nav, host.firstChild) — attach at the far left
+   → host.insertBefore(nav, host.firstChild) — attach as first child of the right-side container
 3. MutationObserver(document.documentElement, { childList:true, subtree:true })
    → calls scheduleTryMount() on every DOM change
    → re-mounts (prevents SPA re-render from losing controls)
@@ -100,7 +100,7 @@ Injected script content:
 
 **Why requestAnimationFrame instead of immediate execution?** OpenCode's React components may update the DOM multiple times within the same microtask. rAF ensures execution before the browser's next paint, avoiding insertion into temporary or about-to-be-replaced DOM nodes.
 
-**Why firstElementChild instead of appendChild?** The Portal button needs to be at the far left of the titlebar (navigation start). `insertBefore(nav, host.firstChild)` guarantees highest priority.
+**Why firstElementChild instead of appendChild?** The Portal button needs to sit at the far left of the right-side titlebar container, before OpenCode's own status/review buttons. `insertBefore(nav, host.firstChild)` guarantees highest priority.
 
 ### 4. Dropdown menu positioning
 
@@ -204,7 +204,7 @@ All proxied responses are processed through `overrideCacheHeaders()`:
 1. **Script size** — inline script ~5KB minified, one extra transfer per HTML page. After gzip ~1.5KB, acceptable.
 2. **Theme dependency** — component appearance fully depends on OpenCode's CSS variables. If upstream significantly restructures the DOM (e.g. deprecates `data-component="button"`), a fresh audit is required. Originally anchored to upstream commit `anomalyco/opencode@dbbe67f` (2026-06-12). **Updated 2026-07-23**: OpenCode v1.17.19+ introduced a V2 UI (`body[data-new-layout]`) with `button-v2` / `menu-v2-*` components and `--v2-*` CSS variables. The injected script now detects V2 at runtime and uses the matching component contract (see `src/server/proxy/nav-script.ts`).
 3. **CSP hash varies with instance list** — adding/removing instances changes the hash, causing the browser to re-download the full page. This is not a problem (first-load behavior by design).
-4. **Multiple #opencode-titlebar-left** — when legacy + v2 coexist, `findVisibleTitlebarLeft()` picks the first node with width>0. If both are visible (not yet observed), may mount to the wrong one. **Resolved in V2 adaptation**: V2 pages have no `#opencode-titlebar-left`; `findMountPoint()` dispatches to `findV2Mount()` (queries `#opencode-titlebar-right`) on V2 pages, avoiding the duplicate-ID issue entirely.
+4. **Multiple #opencode-titlebar-right nodes** — both legacy and V2 mount into `#opencode-titlebar-right`; legacy pages can render duplicate titlebar containers, so `findVisibleTitlebarRight()` picks the first node with width>0 while `findV2Mount()` uses a plain `querySelector`. If both duplicates are visible (not yet observed), the mount may land on the wrong one (mitigated by MutationObserver re-mount).
 
 ### Detection checklist
 
@@ -227,6 +227,10 @@ All proxied responses are processed through `overrideCacheHeaders()`:
 - `src/server/webui/escape.ts` — `safeJson()`, `escapeHtml()`
 
 ---
+
+## Amendment 2026-08-10 — Legacy mounts to the right-side container
+
+The original decision mounted the Portal button into `#opencode-titlebar-left` on legacy pages (and `#opencode-titlebar-right` on V2 pages). The legacy mount point was unified to `#opencode-titlebar-right` so both layouts present the same button order — **OC Portal first, then OpenCode's native status/review buttons**. `findVisibleTitlebarLeft()` was replaced by `findVisibleTitlebarRight()` (same visible-node selection, applied to the right container); `findV2Mount()` is unchanged. If a legacy page has no `#opencode-titlebar-right` container, injection is skipped — no fallback to the left container. The `#_ocp_nav` margin moved from `margin-right` to `margin-left` accordingly.
 
 ## References
 

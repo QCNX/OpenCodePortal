@@ -49,8 +49,8 @@ describe('injectNavBar', () => {
     expect(str).toContain("location.assign('//'+baseDomain+'/')");
     expect(str).not.toContain('href="/dashboard"');
     expect(str).not.toContain('bottom:0');
-    expect(str).toContain('opencode-titlebar-left');
-    expect(str).toContain('findVisibleTitlebarLeft');
+    expect(str).toContain('opencode-titlebar-right');
+    expect(str).toContain('findVisibleTitlebarRight');
     expect(str).toContain('host.insertBefore(nav,host.firstChild)');
     expect(str).toContain('host.firstElementChild!==nav');
     expect(str).toContain('_ocp_dropdown');
@@ -69,7 +69,7 @@ describe('injectNavBar', () => {
     expect(str).toContain('MutationObserver');
     expect(str).toContain('requestAnimationFrame');
     expect(str).not.toContain('obs.disconnect');
-    expect(str).not.toContain('findVisibleTitlebarRight');
+    expect(str).not.toContain('findVisibleTitlebarLeft');
     expect(str).not.toContain('host.lastElementChild!==nav');
     expect(str).toContain('location.reload()');
     expect(str).toContain("location.href='//'+inst.id+'.'+baseDomain+'/'");

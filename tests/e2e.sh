@@ -331,8 +331,8 @@ echo "6e. Nav bar injection"
 nav_resp_complete() {
   local f="$1"
   LC_ALL=C grep -q "nav.id='_ocp_nav'" "$f" \
-    && LC_ALL=C grep -q 'opencode-titlebar-left' "$f" \
-    && LC_ALL=C grep -q 'findVisibleTitlebarLeft' "$f" \
+    && LC_ALL=C grep -q 'opencode-titlebar-right' "$f" \
+    && LC_ALL=C grep -q 'findVisibleTitlebarRight' "$f" \
     && LC_ALL=C grep -q 'host.insertBefore(nav,host.firstChild)' "$f" \
     && LC_ALL=C grep -q "menu.setAttribute('data-component','dropdown-menu-content')" "$f" \
     && LC_ALL=C grep -q "switchItem.id='_ocp_switch'" "$f" \
@@ -366,20 +366,20 @@ else
   fail "Nav bar injection" "not found"
 fi
 
-if LC_ALL=C grep -q 'opencode-titlebar-left' "$NAV_HTML"; then
-  pass "Nav bar targets titlebar-left mount point"
+if LC_ALL=C grep -q 'opencode-titlebar-right' "$NAV_HTML"; then
+  pass "Nav bar targets titlebar-right mount point"
 else
   fail "Titlebar mount point" "not found"
 fi
 
-if LC_ALL=C grep -q 'findVisibleTitlebarLeft' "$NAV_HTML"; then
+if LC_ALL=C grep -q 'findVisibleTitlebarRight' "$NAV_HTML"; then
   pass "Nav bar uses visible titlebar detection"
 else
   fail "Visible titlebar detection" "not found"
 fi
 
 if LC_ALL=C grep -q 'host.insertBefore(nav,host.firstChild)' "$NAV_HTML"; then
-  pass "Nav bar prepends into titlebar-left (leftmost/visible)"
+  pass "Nav bar prepends into titlebar-right (before native buttons)"
 else
   fail "Prepend mount" "not found"
 fi
