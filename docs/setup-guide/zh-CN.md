@@ -4,7 +4,7 @@
 
 ### systemd（推荐）
 
-创建 systemd unit 文件 `/etc/systemd/system/opencode.service`：
+创建 systemd 用户级 unit 文件 `~/.config/systemd/user/opencode.service`：
 
 ```service
 [Unit]
@@ -13,26 +13,28 @@ After=network.target
 
 [Service]
 Type=simple
-User=YOUR_USER
-ExecStart=/home/YOUR_USER/.opencode/bin/opencode serve --hostname 127.0.0.1 --port 4096
+ExecStart=%h/.opencode/bin/opencode serve --hostname 127.0.0.1 --port 4096
 Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 ```
 
 启用并启动：
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now opencode
+# 必须：启用 lingering，用户登出后服务仍保持运行并开机自启
+sudo loginctl enable-linger YOUR_USER
+
+systemctl --user daemon-reload
+systemctl --user enable --now opencode
 ```
 
 验证状态：
 
 ```bash
-sudo systemctl status opencode
+systemctl --user status opencode
 ```
 
 > **提示：** 如需设置 HTTP Basic Auth，在 service 文件中取消注释并设置：

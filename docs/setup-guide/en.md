@@ -4,7 +4,7 @@ Install and run the OpenCode headless server on your target VM.
 
 ### systemd (Recommended)
 
-Create a systemd unit file at `/etc/systemd/system/opencode.service`:
+Create a user-level systemd unit file at `~/.config/systemd/user/opencode.service`:
 
 ```service
 [Unit]
@@ -13,26 +13,28 @@ After=network.target
 
 [Service]
 Type=simple
-User=YOUR_USER
-ExecStart=/home/YOUR_USER/.opencode/bin/opencode serve --hostname 127.0.0.1 --port 4096
+ExecStart=%h/.opencode/bin/opencode serve --hostname 127.0.0.1 --port 4096
 Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 ```
 
 Enable and start:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now opencode
+# Required: enable lingering so the service keeps running after logout and starts at boot
+sudo loginctl enable-linger YOUR_USER
+
+systemctl --user daemon-reload
+systemctl --user enable --now opencode
 ```
 
 Verify status:
 
 ```bash
-sudo systemctl status opencode
+systemctl --user status opencode
 ```
 
 > **Tip:** To enable HTTP Basic Auth, uncomment and set in the service file:
