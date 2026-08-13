@@ -178,6 +178,14 @@ export class Router {
       return;
     }
 
+    // Silently refresh a stale OIDC access token before any auth decision. On
+    // IdP-side revocation the refresh is rejected and the local session is
+    // dropped here, so the user lands on /login instead of riding a dead session.
+    // The sync `needsRefresh` gate keeps the common fresh-token path await-free.
+    if (this.oidcMode && this.oidcClient && this.oidcClient.needsRefresh(req)) {
+      await this.oidcClient.refreshSessionIfStale(req);
+    }
+
     const hostRoute = parseRequestHost(req.headers.host, this.baseDomain);
     const devApexHost = hostRoute === null && isDevApexHost(req.headers.host);
 

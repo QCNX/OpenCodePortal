@@ -75,32 +75,134 @@ describe('SessionStore', () => {
     expect(s.expires).toBeGreaterThan(Date.now());
     expect(s.expires - Date.now()).toBeLessThanOrEqual(1000);
   });
+
+  it('stores the access-token expiry at creation', () => {
+    const store = newStore();
+    const atExp = Date.now() + 300_000;
+    const id = store.create({ sub: 'user-1' }, 'tok', 'refresh', 86_400_000, atExp);
+    const s = store.get(id)!;
+    expect(s.accessTokenExpiresAt).toBe(atExp);
+  });
+
+  it('updateTokens replaces tokens without touching the session TTL', () => {
+    const store = newStore();
+    const id = store.create({ sub: 'user-1' }, 'old-access', 'old-refresh', 86_400_000, Date.now() + 100);
+    const session = store.get(id)!;
+    const expiresBefore = session.expires;
+    const newExp = Date.now() + 300_000;
+
+    store.updateTokens(id, 'new-access', 'new-refresh', newExp);
+    const updated = store.get(id)!;
+    expect(updated.accessToken).toBe('new-access');
+    expect(updated.refreshToken).toBe('new-refresh');
+    expect(updated.accessTokenExpiresAt).toBe(newExp);
+    expect(updated.expires).toBe(expiresBefore); // session TTL unchanged
+  });
+
+  it('updateTokens is a no-op for an unknown id', () => {
+    const store = newStore();
+    expect(() => store.updateTokens('nope', 'a', 'r', Date.now())).not.toThrow();
+  });
 });
 
 describe('effectiveSessionTtlMs', () => {
   const HOUR = 3_600_000;
 
-  it('follows the IdP access-token lifetime when sessionTtlHours is unset', () => {
-    expect(effectiveSessionTtlMs(undefined, 900)).toBe(900_000);
+  it('uses the default 24h when sessionTtlHours is unset', () => {
+    expect(effectiveSessionTtlMs(undefined)).toBe(24 * HOUR);
   });
 
-  it('configured sessionTtlHours wins over the IdP lifetime', () => {
-    expect(effectiveSessionTtlMs(2, 900)).toBe(2 * HOUR);
-  });
-
-  it('falls back to 24h when neither source is available', () => {
-    expect(effectiveSessionTtlMs(undefined, undefined)).toBe(24 * HOUR);
+  it('configured sessionTtlHours wins', () => {
+    expect(effectiveSessionTtlMs(2)).toBe(2 * HOUR);
   });
 
   it('ignores invalid sessionTtlHours (zero/negative/non-finite)', () => {
-    expect(effectiveSessionTtlMs(0, 900)).toBe(900_000);
-    expect(effectiveSessionTtlMs(-1, 900)).toBe(900_000);
-    expect(effectiveSessionTtlMs(NaN, 900)).toBe(900_000);
+    expect(effectiveSessionTtlMs(0)).toBe(24 * HOUR);
+    expect(effectiveSessionTtlMs(-1)).toBe(24 * HOUR);
+    expect(effectiveSessionTtlMs(NaN)).toBe(24 * HOUR);
+  });
+});
+
+describe('OidcClient.refreshSessionIfStale', () => {
+  /** Build a client whose refresh grant can be stubbed. */
+  function clientWithSession(opts: {
+    grant?: (config: any, refreshToken: string, params?: any) => Promise<any>;
+    refreshToken?: string;
+    accessTokenExpiresAt?: number;
+  } = {}): any {
+    const c = new OidcClient() as any;
+    c.config = {}; // initialized
+    c.sessionStore = new SessionStore();
+    c.scopes = 'openid profile email';
+    c.refreshGrant = opts.grant ?? (async () => ({
+      access_token: 'fresh-access',
+      refresh_token: 'fresh-refresh',
+      expires_in: 300,
+    }));
+    const id = c.sessionStore.create(
+      { sub: 'user-1' },
+      'stale-access',
+      opts.refreshToken !== undefined ? opts.refreshToken : 'rt-1',
+      86_400_000,
+      opts.accessTokenExpiresAt ?? Date.now() - 1000, // stale by default
+    );
+    return { c, id, store: c.sessionStore };
+  }
+
+  it('is a no-op without a session cookie', async () => {
+    const { c } = clientWithSession();
+    let called = false;
+    c.refreshGrant = async () => { called = true; return {}; };
+    await c.refreshSessionIfStale(reqWithCookie(''));
+    expect(called).toBe(false);
   });
 
-  it('ignores an invalid IdP expires_in when sessionTtlHours is unset', () => {
-    expect(effectiveSessionTtlMs(undefined, 0)).toBe(24 * HOUR);
-    expect(effectiveSessionTtlMs(undefined, NaN)).toBe(24 * HOUR);
+  it('skips the refresh while the access token is still fresh', async () => {
+    const { c, id } = clientWithSession({ accessTokenExpiresAt: Date.now() + 3600_000 });
+    let called = false;
+    c.refreshGrant = async () => { called = true; return {}; };
+    await c.refreshSessionIfStale(reqWithCookie(`ocp_session=${id}`));
+    expect(called).toBe(false);
+  });
+
+  it('silently refreshes a stale access token and rotates the refresh token', async () => {
+    const { c, id, store } = clientWithSession();
+    await c.refreshSessionIfStale(reqWithCookie(`ocp_session=${id}`));
+    const s = store.get(id);
+    expect(s!.accessToken).toBe('fresh-access');
+    expect(s!.refreshToken).toBe('fresh-refresh');
+    expect(s!.accessTokenExpiresAt).toBeGreaterThan(Date.now());
+    expect(s!.user.sub).toBe('user-1'); // identity untouched
+  });
+
+  it('keeps the existing refresh token when the IdP returns none', async () => {
+    const { c, id, store } = clientWithSession({
+      grant: async () => ({ access_token: 'fresh-access', expires_in: 300 }),
+    });
+    await c.refreshSessionIfStale(reqWithCookie(`ocp_session=${id}`));
+    expect(store.get(id)!.refreshToken).toBe('rt-1');
+  });
+
+  it('leaves the session alone when there is no refresh token', async () => {
+    const { c, id, store } = clientWithSession({ refreshToken: '' });
+    let called = false;
+    c.refreshGrant = async () => { called = true; return {}; };
+    await c.refreshSessionIfStale(reqWithCookie(`ocp_session=${id}`));
+    expect(called).toBe(false);
+    expect(store.get(id)).toBeDefined();
+  });
+
+  it('destroys the session when the IdP rejects the refresh', async () => {
+    const { c, id, store } = clientWithSession({
+      grant: async () => { throw new Error('invalid_grant'); },
+    });
+    await c.refreshSessionIfStale(reqWithCookie(`ocp_session=${id}`));
+    expect(store.get(id)).toBeUndefined();
+  });
+
+  it('is a no-op when OIDC is not initialized', async () => {
+    const c = new OidcClient() as any;
+    await expect(c.refreshSessionIfStale(reqWithCookie('ocp_session=whatever'))).resolves.toBeUndefined();
   });
 });
 

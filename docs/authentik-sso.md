@@ -75,24 +75,30 @@ back to `sharedSecret` (or open) instead of failing to start on a typo.
 
 ### Session lifetime
 
-By default the browser session lifetime **follows the Authentik access-token
-lifetime** (the `expires_in` value returned by the token endpoint): when that
-token expires, the Portal session ends and the user must log in again. To
-control this, adjust **Access token validity** on the Authentik provider
-(Providers → your provider → Advanced protocol settings).
+The browser session follows the standard OIDC split between short-lived
+credentials and the user session:
 
-To override the IdP lifetime, set `sessionTtlHours` on the `oidc` block — the
-configured value then wins:
+- **Session (cookie) lifetime is decided by the Portal** — `sessionTtlHours`
+  (default 24h). It is *not* tied to the Authentik access-token lifetime:
+- **The access token is silently refreshed in the background** with the
+  refresh token (`expires_in` from the token endpoint), so a short access-token
+  validity (Authentik's default is 5 minutes) never logs the user out.
+- **IdP-side revocation propagates**: if Authentik rejects the refresh (session
+  revoked, password changed, policy changed), the Portal session is dropped and
+  the user is asked to log in again.
 
 ```yaml
 gateway:
   oidc:
     ...
-    sessionTtlHours: 48   # force a 48h session regardless of the IdP token
+    sessionTtlHours: 48   # force a 48h session; access tokens refresh silently meanwhile
 ```
 
-If neither source is available (no `sessionTtlHours` and Authentik returns no
-`expires_in`), the session falls back to 24 hours.
+Keep **Access token validity** short (e.g. 5 minutes) for security — it no
+longer affects how long the user stays logged in. A longer **Refresh token
+validity** (Providers → your provider → Advanced protocol settings) allows
+longer-lived sessions without re-login; `sessionTtlHours` caps the session
+regardless.
 
 ## 3. Reverse proxy (NPM)
 
@@ -120,7 +126,7 @@ Gateway routes them internally. Ensure the public scheme is HTTPS so the
 **Logout** is local: `/auth/logout` (Dashboard header, injected OC Portal
 dropdown "Logout", or direct URL) destroys the Gateway session and
 redirects to `/login`.
-The Authentik session itself is left intact.
+The Authentik session itself is left intact (no IdP `end_session` call).
 
 ## 5. Break-glass / API access
 

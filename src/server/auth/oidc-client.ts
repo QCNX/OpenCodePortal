@@ -30,15 +30,14 @@ const DEFAULT_SESSION_TTL_MS = 24 * HOURS_TO_MS;
 /**
  * Effective browser-session lifetime for a login:
  * - `sessionTtlHours` configured → that value wins (OCP-side decision);
- * - otherwise follow the IdP access-token lifetime (`expires_in`, seconds);
- * - otherwise fall back to the fixed 24h default.
+ * - otherwise the fixed 24h default applies.
+ * The IdP access-token lifetime is deliberately NOT used: short-lived access
+ * tokens are silently refreshed via the refresh token instead (see
+ * `refreshSessionIfStale`), so token expiry never ends the user session.
  */
-export function effectiveSessionTtlMs(sessionTtlHours: number | undefined, idpExpiresInSec: number | undefined): number {
+export function effectiveSessionTtlMs(sessionTtlHours: number | undefined): number {
   if (typeof sessionTtlHours === 'number' && Number.isFinite(sessionTtlHours) && sessionTtlHours > 0) {
     return sessionTtlHours * HOURS_TO_MS;
-  }
-  if (typeof idpExpiresInSec === 'number' && Number.isFinite(idpExpiresInSec) && idpExpiresInSec > 0) {
-    return idpExpiresInSec * 1000;
   }
   return DEFAULT_SESSION_TTL_MS;
 }
@@ -50,6 +49,9 @@ interface Session {
   user: { sub: string; name?: string; email?: string };
   accessToken: string;
   refreshToken?: string;
+  /** IdP access-token expiry (ms epoch); undefined when the IdP sent no expires_in. */
+  accessTokenExpiresAt?: number;
+  /** Session (cookie) expiry — fixed at login, NOT extended by token refreshes. */
   expires: number;
 }
 
@@ -73,9 +75,15 @@ export class SessionStore {
     if (typeof this.cleanupTimer.unref === 'function') this.cleanupTimer.unref();
   }
 
-  create(user: { sub: string; name?: string; email?: string }, accessToken: string, refreshToken?: string, ttlMs: number = DEFAULT_SESSION_TTL_MS): string {
+  create(
+    user: { sub: string; name?: string; email?: string },
+    accessToken: string,
+    refreshToken?: string,
+    ttlMs: number = DEFAULT_SESSION_TTL_MS,
+    accessTokenExpiresAt?: number,
+  ): string {
     const id = crypto.randomBytes(32).toString('hex');
-    this.sessions.set(id, { id, user, accessToken, refreshToken, expires: Date.now() + ttlMs });
+    this.sessions.set(id, { id, user, accessToken, refreshToken, accessTokenExpiresAt, expires: Date.now() + ttlMs });
     return id;
   }
 
@@ -83,6 +91,15 @@ export class SessionStore {
     const s = this.sessions.get(id);
     if (s && Date.now() > s.expires) { this.sessions.delete(id); return undefined; }
     return s;
+  }
+
+  /** Replace the session's tokens after a silent refresh (refresh-token rotation included). */
+  updateTokens(id: string, accessToken: string, refreshToken: string, accessTokenExpiresAt?: number): void {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    s.accessToken = accessToken;
+    s.refreshToken = refreshToken;
+    s.accessTokenExpiresAt = accessTokenExpiresAt;
   }
 
   delete(id: string): void { this.sessions.delete(id); }
@@ -104,8 +121,10 @@ export class OidcClient {
   private redirectUri = '';
   private scopes = 'openid profile email';
   private cookieDomain = '';
-  /** OCP-side session lifetime in hours; unset → follow the IdP access-token lifetime. */
+  /** OCP-side session lifetime in hours; unset → fixed 24h default. */
   private sessionTtlHours: number | undefined = undefined;
+  /** Token-endpoint grant used for silent refresh; injectable for tests. */
+  private refreshGrant: typeof oidc.refreshTokenGrant = oidc.refreshTokenGrant;
   // HMAC key for signing the transient login-transaction cookie. Regenerated
   // each process start — pending logins survive only within one Gateway run.
   private txSecret = crypto.randomBytes(32);
@@ -191,8 +210,17 @@ export class OidcClient {
         email: claims?.email as string | undefined,
       };
 
-      const sessionTtlMs = effectiveSessionTtlMs(this.sessionTtlHours, tokenResponse.expires_in);
-      const sessionId = this.sessionStore.create(user, tokenResponse.access_token, tokenResponse.refresh_token, sessionTtlMs);
+      const sessionTtlMs = effectiveSessionTtlMs(this.sessionTtlHours);
+      const accessTokenExpiresAt = (typeof tokenResponse.expires_in === 'number' && tokenResponse.expires_in > 0)
+        ? Date.now() + tokenResponse.expires_in * 1000
+        : undefined;
+      const sessionId = this.sessionStore.create(
+        user,
+        tokenResponse.access_token,
+        tokenResponse.refresh_token,
+        sessionTtlMs,
+        accessTokenExpiresAt,
+      );
 
       this.clearTxCookie(res, req.headers.host, isSecureRequest(req));
       appendSetCookie(res, this.sessionCookie(sessionId, sessionTtlMs, req.headers.host, isSecureRequest(req)));
@@ -219,6 +247,57 @@ export class OidcClient {
   getSession(req: http.IncomingMessage): Session | undefined {
     const sid = parseCookies(req)[SESSION_COOKIE];
     return sid ? this.sessionStore.get(sid) : undefined;
+  }
+
+  /**
+   * Synchronous pre-check for `refreshSessionIfStale`: true only when the
+   * session has a refresh token AND the access token is known to be expired.
+   * Keeps the common (fresh-token) request path free of any await.
+   */
+  needsRefresh(req: http.IncomingMessage): boolean {
+    if (!this.config) return false;
+    const sid = parseCookies(req)[SESSION_COOKIE];
+    if (!sid) return false;
+    const session = this.sessionStore.get(sid);
+    if (!session || !session.refreshToken) return false;
+    if (session.accessTokenExpiresAt === undefined) return false; // no expiry known — nothing to refresh against
+    return Date.now() >= session.accessTokenExpiresAt;
+  }
+
+  /**
+   * Silently refresh the session's access token when it is stale, without
+   * touching the session/cookie TTL. Called once per HTTP request before the
+   * auth check:
+   * - access token still fresh → no-op;
+   * - stale + refresh token present → token-endpoint refresh (rotates the
+   *   refresh token when the IdP issues a new one);
+   * - refresh rejected (IdP-side revocation, credential change, …) → the
+   *   local session is destroyed so the user is asked to log in again.
+   * This is how IdP-side session revocation propagates to the Portal.
+   */
+  async refreshSessionIfStale(req: http.IncomingMessage): Promise<void> {
+    if (!this.config) return;
+    const sid = parseCookies(req)[SESSION_COOKIE];
+    if (!sid) return;
+    const session = this.sessionStore.get(sid);
+    if (!session || !session.refreshToken) return;
+    if (session.accessTokenExpiresAt !== undefined && Date.now() < session.accessTokenExpiresAt) return;
+    try {
+      const tokens = await this.refreshGrant(this.config, session.refreshToken, { scope: this.scopes });
+      const nextExpiresAt = (typeof tokens.expires_in === 'number' && tokens.expires_in > 0)
+        ? Date.now() + tokens.expires_in * 1000
+        : undefined;
+      this.sessionStore.updateTokens(
+        sid,
+        tokens.access_token,
+        tokens.refresh_token ?? session.refreshToken,
+        nextExpiresAt,
+      );
+      log.info('oidc_refresh', 'access token silently refreshed', { sub: session.user.sub });
+    } catch (err: any) {
+      log.warn('oidc_refresh', 'refresh token rejected — session ended', { error: err.message });
+      this.sessionStore.delete(sid);
+    }
   }
 
   getUser(req: http.IncomingMessage): { sub: string; name?: string; email?: string } | null {

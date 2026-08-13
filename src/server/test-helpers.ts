@@ -87,6 +87,8 @@ export function createFakeOidc(session?: { sub: string; name?: string; email?: s
     getSession() { return this.sessionValue; },
     getUser() { return this.sessionValue ?? null; },
     isConfigured() { return true; },
+    needsRefresh() { return false; },
+    refreshSessionIfStale() { return Promise.resolve(); },
     login(_req: any, res: any) {
       this.calls.login++;
       res.writeHead(302, { Location: 'https://idp.example.com/authorize' });

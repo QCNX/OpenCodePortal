@@ -19,6 +19,7 @@ vi.mock('openid-client', () => ({
     serverMetadata: () => ({ issuer: 'https://auth.example.com/application/o/opencode/' }),
   }),
   allowInsecureRequests: vi.fn(),
+  refreshTokenGrant: vi.fn(),
 }));
 
 // -- Fake clock + scheduler ---------------------------------------------------
