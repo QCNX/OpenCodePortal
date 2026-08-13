@@ -38,6 +38,10 @@ function parseOidc(raw: any): OidcConfig | undefined {
     ? raw.scopes.map(String)
     : DEFAULT_OIDC_SCOPES;
 
+  const sessionTtlHours = typeof raw.sessionTtlHours === 'number' && Number.isFinite(raw.sessionTtlHours) && raw.sessionTtlHours > 0
+    ? raw.sessionTtlHours
+    : undefined;
+
   return {
     issuer: raw.issuer,
     clientId: raw.clientId,
@@ -46,6 +50,7 @@ function parseOidc(raw: any): OidcConfig | undefined {
     scopes,
     ...(raw.allowInsecureIssuer === true ? { allowInsecureIssuer: true } : {}),
     ...(typeof raw.postLogoutRedirectUri === 'string' ? { postLogoutRedirectUri: raw.postLogoutRedirectUri } : {}),
+    ...(sessionTtlHours !== undefined ? { sessionTtlHours } : {}),
   };
 }
 

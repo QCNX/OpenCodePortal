@@ -4,7 +4,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import * as http from 'http';
-import { SessionStore, OidcClient, sanitizeReturnTo } from './oidc-client';
+import { SessionStore, OidcClient, sanitizeReturnTo, effectiveSessionTtlMs } from './oidc-client';
 import { appendSetCookie } from '../http/cookies';
 
 function mockRes(): any {
@@ -66,6 +66,41 @@ describe('SessionStore', () => {
     const s = store.get(id)!;
     s.expires = Date.now() - 1; // force-expire
     expect(store.get(id)).toBeUndefined();
+  });
+
+  it('honors an explicit ttlMs at creation', () => {
+    const store = newStore();
+    const id = store.create({ sub: 'user-1' }, 'tok', undefined, 1000);
+    const s = store.get(id)!;
+    expect(s.expires).toBeGreaterThan(Date.now());
+    expect(s.expires - Date.now()).toBeLessThanOrEqual(1000);
+  });
+});
+
+describe('effectiveSessionTtlMs', () => {
+  const HOUR = 3_600_000;
+
+  it('follows the IdP access-token lifetime when sessionTtlHours is unset', () => {
+    expect(effectiveSessionTtlMs(undefined, 900)).toBe(900_000);
+  });
+
+  it('configured sessionTtlHours wins over the IdP lifetime', () => {
+    expect(effectiveSessionTtlMs(2, 900)).toBe(2 * HOUR);
+  });
+
+  it('falls back to 24h when neither source is available', () => {
+    expect(effectiveSessionTtlMs(undefined, undefined)).toBe(24 * HOUR);
+  });
+
+  it('ignores invalid sessionTtlHours (zero/negative/non-finite)', () => {
+    expect(effectiveSessionTtlMs(0, 900)).toBe(900_000);
+    expect(effectiveSessionTtlMs(-1, 900)).toBe(900_000);
+    expect(effectiveSessionTtlMs(NaN, 900)).toBe(900_000);
+  });
+
+  it('ignores an invalid IdP expires_in when sessionTtlHours is unset', () => {
+    expect(effectiveSessionTtlMs(undefined, 0)).toBe(24 * HOUR);
+    expect(effectiveSessionTtlMs(undefined, NaN)).toBe(24 * HOUR);
   });
 });
 

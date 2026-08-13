@@ -22,7 +22,26 @@ const log: Logger = createLogger('gateway');
 const SESSION_COOKIE = 'ocp_session';
 const TX_COOKIE = 'ocp_oidc_tx'; // short-lived login transaction (PKCE/state/nonce)
 const TX_TTL_MS = 5 * 60 * 1000;
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const HOURS_TO_MS = 60 * 60 * 1000;
+// Fallback session lifetime: used only when neither `sessionTtlHours` nor the
+// IdP access-token `expires_in` is available.
+const DEFAULT_SESSION_TTL_MS = 24 * HOURS_TO_MS;
+
+/**
+ * Effective browser-session lifetime for a login:
+ * - `sessionTtlHours` configured → that value wins (OCP-side decision);
+ * - otherwise follow the IdP access-token lifetime (`expires_in`, seconds);
+ * - otherwise fall back to the fixed 24h default.
+ */
+export function effectiveSessionTtlMs(sessionTtlHours: number | undefined, idpExpiresInSec: number | undefined): number {
+  if (typeof sessionTtlHours === 'number' && Number.isFinite(sessionTtlHours) && sessionTtlHours > 0) {
+    return sessionTtlHours * HOURS_TO_MS;
+  }
+  if (typeof idpExpiresInSec === 'number' && Number.isFinite(idpExpiresInSec) && idpExpiresInSec > 0) {
+    return idpExpiresInSec * 1000;
+  }
+  return DEFAULT_SESSION_TTL_MS;
+}
 
 // -- Session types ------------------------------------------------------------
 
@@ -54,9 +73,9 @@ export class SessionStore {
     if (typeof this.cleanupTimer.unref === 'function') this.cleanupTimer.unref();
   }
 
-  create(user: { sub: string; name?: string; email?: string }, accessToken: string, refreshToken?: string): string {
+  create(user: { sub: string; name?: string; email?: string }, accessToken: string, refreshToken?: string, ttlMs: number = DEFAULT_SESSION_TTL_MS): string {
     const id = crypto.randomBytes(32).toString('hex');
-    this.sessions.set(id, { id, user, accessToken, refreshToken, expires: Date.now() + SESSION_TTL_MS });
+    this.sessions.set(id, { id, user, accessToken, refreshToken, expires: Date.now() + ttlMs });
     return id;
   }
 
@@ -85,6 +104,8 @@ export class OidcClient {
   private redirectUri = '';
   private scopes = 'openid profile email';
   private cookieDomain = '';
+  /** OCP-side session lifetime in hours; unset → follow the IdP access-token lifetime. */
+  private sessionTtlHours: number | undefined = undefined;
   // HMAC key for signing the transient login-transaction cookie. Regenerated
   // each process start — pending logins survive only within one Gateway run.
   private txSecret = crypto.randomBytes(32);
@@ -93,6 +114,7 @@ export class OidcClient {
     this.baseUrl = baseUrl;
     this.redirectUri = oidcCfg.redirectUri;
     this.cookieDomain = baseDomain;
+    this.sessionTtlHours = oidcCfg.sessionTtlHours;
     if (oidcCfg.scopes && oidcCfg.scopes.length > 0) {
       this.scopes = oidcCfg.scopes.join(' ');
     }
@@ -169,10 +191,11 @@ export class OidcClient {
         email: claims?.email as string | undefined,
       };
 
-      const sessionId = this.sessionStore.create(user, tokenResponse.access_token, tokenResponse.refresh_token);
+      const sessionTtlMs = effectiveSessionTtlMs(this.sessionTtlHours, tokenResponse.expires_in);
+      const sessionId = this.sessionStore.create(user, tokenResponse.access_token, tokenResponse.refresh_token, sessionTtlMs);
 
       this.clearTxCookie(res, req.headers.host, isSecureRequest(req));
-      appendSetCookie(res, this.sessionCookie(sessionId, SESSION_TTL_MS, req.headers.host, isSecureRequest(req)));
+      appendSetCookie(res, this.sessionCookie(sessionId, sessionTtlMs, req.headers.host, isSecureRequest(req)));
       res.writeHead(302, { Location: tx.returnTo });
       res.end();
       log.info('oidc_login', 'user logged in', { sub: user.sub });

@@ -146,6 +146,12 @@ export interface OidcConfig {
   scopes?: string[];    // default: ['openid', 'profile', 'email']
   /** Dev/test only: allow http:// OIDC issuer/discovery endpoints. Defaults to false. */
   allowInsecureIssuer?: boolean;
+  /**
+   * Browser session lifetime in hours. Unset → the session follows the IdP
+   * access-token lifetime (`expires_in`); when set, this value wins.
+   * Fallback when neither is available: 24h.
+   */
+  sessionTtlHours?: number;
   /** Reserved for RP-initiated logout (Phase: end_session). Unused while logout is local-only. */
   postLogoutRedirectUri?: string;
 }

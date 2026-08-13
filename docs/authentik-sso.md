@@ -53,6 +53,7 @@ gateway:
     redirectUri: "https://portal.example.com/auth/callback"
     # scopes: ["openid", "profile", "email"]   # optional (default)
     # allowInsecureIssuer: true                 # dev/test only for http:// issuers
+    # sessionTtlHours: 24                       # optional session lifetime (hours)
 ```
 
 Provide secrets via a `.env` file in the Gateway working directory (auto-loaded
@@ -71,6 +72,27 @@ cp .env.example .env
 An incomplete `oidc` block (missing a required field, or an unresolved
 `${ENV}` placeholder) is **ignored with a warning** — the Gateway then falls
 back to `sharedSecret` (or open) instead of failing to start on a typo.
+
+### Session lifetime
+
+By default the browser session lifetime **follows the Authentik access-token
+lifetime** (the `expires_in` value returned by the token endpoint): when that
+token expires, the Portal session ends and the user must log in again. To
+control this, adjust **Access token validity** on the Authentik provider
+(Providers → your provider → Advanced protocol settings).
+
+To override the IdP lifetime, set `sessionTtlHours` on the `oidc` block — the
+configured value then wins:
+
+```yaml
+gateway:
+  oidc:
+    ...
+    sessionTtlHours: 48   # force a 48h session regardless of the IdP token
+```
+
+If neither source is available (no `sessionTtlHours` and Authentik returns no
+`expires_in`), the session falls back to 24 hours.
 
 ## 3. Reverse proxy (NPM)
 

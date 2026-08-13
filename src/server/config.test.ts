@@ -240,6 +240,82 @@ gateway:
     expect(config.gateway.oidc!.allowInsecureIssuer).toBe(true);
   });
 
+  it('parses a positive oidc sessionTtlHours', () => {
+    const yaml = `
+gateway:
+  oidc:
+    issuer: "https://auth.example.com/"
+    clientId: "c"
+    clientSecret: "s"
+    redirectUri: "https://portal.example.com/auth/callback"
+    sessionTtlHours: 12
+`;
+    const configPath = path.join(tmpDir, 'config.yaml');
+    fs.writeFileSync(configPath, yaml);
+
+    const config = loadConfig(configPath);
+    expect(config.gateway.oidc!.sessionTtlHours).toBe(12);
+  });
+
+  it('sessionTtlHours defaults to undefined (follow IdP lifetime)', () => {
+    const yaml = `
+gateway:
+  oidc:
+    issuer: "https://auth.example.com/"
+    clientId: "c"
+    clientSecret: "s"
+    redirectUri: "https://portal.example.com/auth/callback"
+`;
+    const configPath = path.join(tmpDir, 'config.yaml');
+    fs.writeFileSync(configPath, yaml);
+
+    const config = loadConfig(configPath);
+    expect(config.gateway.oidc!.sessionTtlHours).toBeUndefined();
+  });
+
+  it('ignores invalid oidc sessionTtlHours (zero/negative/non-number)', () => {
+    const yaml = `
+gateway:
+  oidc:
+    issuer: "https://auth.example.com/"
+    clientId: "c"
+    clientSecret: "s"
+    redirectUri: "https://portal.example.com/auth/callback"
+    sessionTtlHours: 0
+`;
+    const configPath = path.join(tmpDir, 'config.yaml');
+    fs.writeFileSync(configPath, yaml);
+
+    const config = loadConfig(configPath);
+    expect(config.gateway.oidc!.sessionTtlHours).toBeUndefined();
+
+    const yaml2 = `
+gateway:
+  oidc:
+    issuer: "https://auth.example.com/"
+    clientId: "c"
+    clientSecret: "s"
+    redirectUri: "https://portal.example.com/auth/callback"
+    sessionTtlHours: -5
+`;
+    const configPath2 = path.join(tmpDir, 'config2.yaml');
+    fs.writeFileSync(configPath2, yaml2);
+    expect(loadConfig(configPath2).gateway.oidc!.sessionTtlHours).toBeUndefined();
+
+    const yaml3 = `
+gateway:
+  oidc:
+    issuer: "https://auth.example.com/"
+    clientId: "c"
+    clientSecret: "s"
+    redirectUri: "https://portal.example.com/auth/callback"
+    sessionTtlHours: "24"
+`;
+    const configPath3 = path.join(tmpDir, 'config3.yaml');
+    fs.writeFileSync(configPath3, yaml3);
+    expect(loadConfig(configPath3).gateway.oidc!.sessionTtlHours).toBeUndefined();
+  });
+
   it('substitutes ${ENV} in oidc clientSecret', () => {
     process.env.TEST_OIDC_SECRET = 'secret-from-env';
     try {
